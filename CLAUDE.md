@@ -15,11 +15,12 @@ The developer working in this repo owns **only the ML / data / training / infere
 **Environment setup** (no committed venv/lockfile):
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # minimal: FastAPI + CPU torch, boots backend + trains all 3 models
-pip install -r requirements-full.txt     # adds GRIB2/NetCDF/eccodes stack (heavy, not needed for API dev)
+pip install -r requirements-api.txt      # API dev/test only — no torch, boots backend + runs pytest
+pip install -r requirements.txt          # full: adds ML/training stack (torch, transformers, etc.)
+pip install -r requirements-full.txt     # adds GRIB2/NetCDF/eccodes stack (heavy, rarely needed)
 pip install -r requirements-kaggle.txt   # Kaggle-notebook variant
 ```
-If `pip` itself is missing and you can't get sudo/`apt install python3-venv` in a sandboxed environment: `curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - --user --break-system-packages`, then `pip install --user --break-system-packages <packages>`. The live API never imports `torch` at request time (see Architecture below), so a fast, torch-free install is enough to run the app and test suite.
+`requirements.txt`'s `torch` pin is a flexible range (`>=2.3,<3`), not an exact version — an exact pin (`==2.3.1`) has no wheel for Python 3.12+ and hard-fails `pip install` entirely on newer systems (hit and fixed this session on Python 3.14). If `pip` itself is missing and you can't get sudo/`apt install python3-venv` in a sandboxed environment: `curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - --user --break-system-packages`, then `pip install --user --break-system-packages <packages>`. The live API never imports `torch` at request time (see Architecture below), so `requirements-api.txt` is enough to run the app and test suite.
 
 **Run the API:**
 ```bash

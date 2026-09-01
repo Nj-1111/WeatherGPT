@@ -21,7 +21,6 @@ from app.rade.v2 import decide
 from app.schemas.api import ContextRequest, DecisionRequest, FeedbackRequest, LocationInput, QueryRequestV1
 from app.schemas.location import ResolvedLocation
 from app.services.cache import weather_cache
-from app.services.disagreement import detect_disagreement
 from app.services.evidence_store import evidence_store
 from app.services.location_resolver import LocationAmbiguousError, LocationNotFoundError, extract_location, resolve_location
 from app.services.retrieval import retrieve

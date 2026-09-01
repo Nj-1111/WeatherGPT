@@ -26,7 +26,7 @@ WeatherGPT is a modular FastAPI weather-intelligence backend. It normalizes sour
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-api.txt   # API only, no torch — see requirements.txt for the full ML/training set
 uvicorn app.main:app --host 0.0.0.0 --port 8001
 pytest -q
 ```

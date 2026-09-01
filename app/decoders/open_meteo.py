@@ -25,7 +25,11 @@ def decode_open_meteo(payload: Dict[str, Any], lat: float, lon: float) -> List[C
     except Exception:
         issued = datetime.now(timezone.utc)
 
-    for i, t in enumerate(times[:48]):  # cap 48h
+    for i, t in enumerate(times):  # no artificial cap — forecast_days (set by the caller based on the
+                                    # query window) already bounds how much data Open-Meteo returns; a
+                                    # fixed 48h slice here could silently drop the actual requested window
+                                    # (e.g. "tomorrow afternoon" IST can fall past hour 48 depending on
+                                    # what time of day, UTC, the request is made)
         try:
             valid = datetime.fromisoformat(t.replace("Z","+00:00"))
             if valid.tzinfo is None:

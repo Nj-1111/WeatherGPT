@@ -1,5 +1,12 @@
 """
-Bias-Correction / Downscaler — GFS coarse → IMD AWS truth.
+Bias-Correction / Downscaler — GFS forecast vs ERA5 reanalysis ground truth.
+
+Ground truth is ERA5 reanalysis, not real station observations (e.g. IMD AWS).
+ERA5 is a standard, defensible ground-truth proxy in meteorological ML, but it
+is a physics + data-assimilation product, not a raw observation — report
+results as "vs. ERA5 reanalysis," not as validated against real ground
+stations, unless a real observation source is wired in separately.
+
 MLP (PyTorch, T4-ready) or LightGBM. Reportable runs require real matched pairs.
 Usage:
   python training/train_bias_correction.py --dry-run
@@ -57,13 +64,13 @@ def load_real():
                         df["lead_hours"] = df["lead_hours"] % 72
                         print(f"[bias] recomputed lead_hours to 0-71 cycle (was time-index)")
                     # Ensure dtypes and handle missing cols
-                    for c in ["gfs_t2m_k","gfs_apcp_mm","elevation_m","lead_hours","lat"]:
+                    for c in ["gfs_t2m_k","gfs_apcp_mm","elevation_m","lead_hours","lat","lon"]:
                         if c not in df.columns:
                             df[c]=0
                     gfs_c = df["gfs_t2m_k"].values.astype(np.float32) - 273.15
                     y_t = df["obs_t2m_c"].values.astype(np.float32) - gfs_c
                     y_p = df["obs_apcp_mm"].values.astype(np.float32) - df["gfs_apcp_mm"].values.astype(np.float32)
-                    X = df[["gfs_t2m_k","gfs_apcp_mm","elevation_m","lead_hours","lat"]].values.astype(np.float32)
+                    X = df[["gfs_t2m_k","gfs_apcp_mm","elevation_m","lead_hours","lat","lon"]].values.astype(np.float32)
                     y = np.stack([y_t, y_p], axis=1).astype(np.float32)
                     # keep time order for time-aware split downstream (don't shuffle globally here)
                     return X, y

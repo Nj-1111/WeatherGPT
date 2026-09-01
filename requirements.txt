@@ -9,7 +9,11 @@ httpx==0.27.2
 python-dotenv==1.0.1
 
 # ML — CPU torch by default; Kaggle notebook upgrades to cuda build automatically
-torch==2.3.1
+# Flexible range, not a hard pin: torch==2.3.1 has no wheel for Python 3.12+
+# (fails pip resolution entirely on newer systems, e.g. Python 3.14 -> only
+# torch>=2.9.0 available). If you need an exact pin for reproducibility, pass
+# --no-deps and pin torch yourself for your specific Python version.
+torch>=2.3,<3
 transformers==4.42.4
 datasets==2.20.0
 tokenizers==0.19.1

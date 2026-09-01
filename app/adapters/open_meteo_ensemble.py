@@ -40,16 +40,21 @@ class OpenMeteoEnsembleAdapter(WeatherSourceAdapter):
             return []
         geometry = Geometry(type="GridCell", coordinates=[lon, lat])
         results: list[CanonicalEvidenceObject] = []
-        for index, raw_time in enumerate(hourly.get("time", [])[:48]):
+        # "precipitation" is the raw Open-Meteo field name, not a valid CanonicalVariable — must
+        # map to the canonical enum value or every row fails Pydantic validation and the whole
+        # source silently reports "unavailable".
+        canonical_variable = {"temperature_2m": "temperature_2m", "precipitation": "precipitation_amount"}
+        for index, raw_time in enumerate(hourly.get("time", [])):  # no artificial cap — see open_meteo.py
             try:
                 valid = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
                 valid = valid if valid.tzinfo else valid.replace(tzinfo=timezone.utc)
             except ValueError:
                 continue
-            for variable, member_id, key in fields:
+            for raw_variable, member_id, key in fields:
                 values = hourly.get(key, [])
                 if index >= len(values) or values[index] is None:
                     continue
+                variable = canonical_variable[raw_variable]
                 results.append(CanonicalEvidenceObject(
                     source="GEFS", evidence_class="forecast", variable=variable, value=float(values[index]),
                     unit="C" if variable == "temperature_2m" else "mm",

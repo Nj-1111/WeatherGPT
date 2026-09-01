@@ -1,0 +1,59 @@
+{
+  "status": "ok",
+  "liveness": true,
+  "readiness": true,
+  "uptime_s": 5,
+  "sources": {
+    "OPEN_METEO": {
+      "available": true,
+      "latency_ms": 804,
+      "reason": "ok"
+    },
+    "ERA5": {
+      "available": true,
+      "latency_ms": 819,
+      "reason": "ok"
+    },
+    "GEFS": {
+      "available": true,
+      "latency_ms": 724,
+      "reason": "endpoint reachable; member fields validated per response"
+    },
+    "CAP": {
+      "available": false,
+      "latency_ms": 0,
+      "reason": "CAP_FEED_URL not configured (ready)"
+    },
+    "NASA_POWER": {
+      "available": true,
+      "latency_ms": 1117,
+      "reason": "ok"
+    },
+    "IMD": {
+      "available": false,
+      "latency_ms": 0,
+      "reason": "IMD_API_KEY not configured (ready)"
+    },
+    "GFS": {
+      "available": false,
+      "latency_ms": 0,
+      "reason": "missing eccodes/cfgrib: No module named 'eccodes' (ready, not mocked)"
+    }
+  },
+  "database": {
+    "available": true,
+    "driver": "sqlite"
+  },
+  "cache": {
+    "available": true,
+    "entries": 0,
+    "hit_rate": 0.0
+  },
+  "llm": {
+    "configured": false,
+    "checked": false
+  },
+  "models": {
+    "runtime_loading": "rule-based fallback only; artifacts are not trusted until registry validation"
+  }
+}
