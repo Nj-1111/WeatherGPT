@@ -55,16 +55,3 @@ class WeatherIntelligenceObject(BaseModel):
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     wio_version: str = "1.0"
 
-class QueryRequest(BaseModel):
-    question: str
-    location: Optional[Dict[str, Any]] = None  # {raw, lat, lon, district, pincode}
-    lang: str = "en"
-    profile: Optional[Dict[str, Any]] = None  # optional context for RADE
-    horizon_hint: Optional[str] = None  # nowcast|short|medium|climate
-
-class QueryResponse(BaseModel):
-    answer: Optional[str] = None
-    wio: WeatherIntelligenceObject
-    evidence_count: int = 0
-    warnings: List[WIOWarning] = Field(default_factory=list)
-    lang: str = "en"

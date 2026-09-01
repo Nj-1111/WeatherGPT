@@ -20,7 +20,6 @@ from app.orchestrator.retrieval_planner import build_retrieval_plan
 from app.rade.v2 import decide
 from app.schemas.api import ContextRequest, DecisionRequest, FeedbackRequest, LocationInput, QueryRequestV1
 from app.schemas.location import ResolvedLocation
-from app.schemas.wio import QueryRequest, QueryResponse
 from app.services.cache import weather_cache
 from app.services.disagreement import detect_disagreement
 from app.services.evidence_store import evidence_store

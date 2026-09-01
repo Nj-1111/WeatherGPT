@@ -49,13 +49,13 @@ async def run_observation_agent(ceos: List[CanonicalEvidenceObject]) -> AgentRes
 
 async def run_decision_agent(wio, user_context: Dict[str, Any], evidence_ids: list[str]) -> AgentResult:
     start=time.time()
-    from app.rade.policy import select_policy
+    from app.rade.v2 import decide
     try:
-        best, scores, scenarios = select_policy(wio)
-        claims=[Claim(claim="recommended_action", value=best, evidence_ids=evidence_ids, confidence=0.8)]
-        for s in scenarios[:2]:
-            claims.append(Claim(claim=f"scenario_{s['name']}", value=s["p"], unit="probability", evidence_ids=evidence_ids, confidence=0.8))
-        return AgentResult(agent_name="decision", claims=claims, confidence=0.8, execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"), status="success")
+        result = decide(wio, user_context, wio.query.raw_text or "")
+        claims=[Claim(claim="recommended_action", value=result.recommended_action, evidence_ids=evidence_ids, confidence=result.confidence)]
+        for s in result.scenarios[:2]:
+            claims.append(Claim(claim=f"scenario_{s.name}", value=s.probability, unit="probability", evidence_ids=evidence_ids, confidence=result.confidence))
+        return AgentResult(agent_name="decision", claims=claims, confidence=result.confidence, execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"), status="success")
     except Exception as e:
         return AgentResult(agent_name="decision", claims=[], confidence=0.5, errors=[str(e)], status="failed", execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"))
 
