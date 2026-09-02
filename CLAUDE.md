@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The developer working in this repo owns **only the ML / data / training / inference-serving portions**. This is a hard scope boundary, not a preference:
 
-**In scope:** the data pipeline (Open-Meteo/ERA5/GFS/IMD/NASA POWER/CAP retrieval), the CEO→WIO fusion pipeline (`app/services/`, `app/schemas/ceo.py`, `app/schemas/wio.py`), the ML models (`training/` — M1 semantic classifier, M2 bias-correction, M3 intent parser), the LLM/agent orchestration layer (`app/agents/`, `app/orchestrator/`), the RADE decision engine (`app/rade/`), and the FastAPI inference-serving surface (`app/main.py`) as an API provider — plus the MLOps around all of that (Kaggle training, checkpointing, Hugging Face model hosting, basic EC2 inference deployment).
+**In scope:** the data pipeline (Open-Meteo/ERA5/GFS/IMD/NASA POWER/CAP retrieval), the CEO→WIO fusion pipeline (`app/services/`, `app/schemas/ceo.py`, `app/schemas/wio.py`), the M2 bias-correction model (`training/build_matched_pairs.py`, `training/baseline_models.py`, `kaggle_kernel_m2/train_m2.py`), the LLM/agent orchestration layer (`app/agents/`, `app/orchestrator/`), the RADE decision engine (`app/rade/`), and the FastAPI inference-serving surface (`app/main.py`) as an API provider — plus the MLOps around all of that (Kaggle training, checkpointing, Hugging Face model hosting, basic EC2 inference deployment).
 
 **Permanently out of scope — do not propose or generate code for these unless explicitly asked:** any Android/mobile client, any dedicated frontend/UI, general backend/product engineering (auth, user accounts, billing, non-inference API surface), voice/TTS/STT, Nginx/Vercel/HF-Space *website* deployment, and CI/CD or release engineering beyond basic version control.
 
@@ -41,13 +41,13 @@ ruff check .        # line-length 100, target py310
 mypy app             # ignore_missing_imports = true
 ```
 
-**Training** (see Architecture → Training below before running — several scripts intentionally refuse to run without real data):
+**Training** (see Architecture → Training below):
 ```bash
-python training/train_bias_correction.py --model mlp --epochs 20 --batch-size 256 --device auto
-python training/train_semantic_classifier.py --epochs 5 --batch-size 32 --device auto
-python training/train_intent_parser.py --epochs 3 --batch-size 32 --device auto
+python training/build_matched_pairs.py                                  # builds training/datasets/matched_pairs.csv
+python training/baseline_models.py                                      # LightGBM/ridge vs. zero-correction baseline — run this first
+python kaggle_kernel_m2/train_m2.py --epochs 2 --checkpoint-interval 1 --no-hf   # MLP smoke test, CPU
 ```
-Actual GPU training runs happen on Kaggle (2×T4), via `kaggle_kernel_official/official_train.py` — not in a local/sandbox environment.
+Real GPU training runs happen on Kaggle (2×T4), via `kaggle_kernel_m2/train_m2.py` — see `docs/KAGGLE_TRAINING_GUIDE.md`.
 
 **Docker:**
 ```bash
@@ -79,16 +79,20 @@ location_resolver → time_parser → retrieval_planner (deterministic — LLM n
 
 **RADE (`app/rade/v2.py`, function `decide`)** — the risk-aware decision engine for questions like "should I spray." Builds 2 (or, with ensemble member data, 5-bin) scenarios from `wio.weather.rain`, scores each action as `expected_utility − risk_lambda·downside_risk`, picks the argmax. Returns `defer_decision` rather than guessing when evidence is insufficient — never fabricates a probability or amount. This is the *only* RADE implementation in `app/` — an older parallel v1 (`enumerator.py`/`utility.py`/`policy.py`) existed and was silently computed-but-discarded on every request; it's been removed from `app/` (still present, unmodified, in the separate frozen `kaggle_kernel/app/` snapshot, whose own `main.py` genuinely depends on it — don't delete that copy).
 
-### Training (`training/`)
+### Training — M2 bias correction only (`training/`, `kaggle_kernel_m2/`)
 
-Three scripts (`train_semantic_classifier.py`=M1, `train_bias_correction.py`=M2, `train_intent_parser.py`=M3), each config-driven from `training/configs/*.yaml` to varying degrees (M2's config is fully wired; M1/M3 have some YAML fields — `weight_decay`, `seed`, `intent.yaml`'s BIO label list — that are defined but not actually read by the script). **M1 and M3 intentionally raise `RuntimeError` and refuse to train** if their required real dataset isn't present (`training/datasets/field_names.csv`, `training/datasets/intent_samples.jsonl`) — they do not silently fall back to synthetic data for a real run; the synthetic generators only run under `--dry-run`. M2 requires an explicit `--allow-synthetic-development` flag to use synthetic data at all, and prints a "DEVELOPMENT ONLY" warning when it does.
+The earlier M1 (semantic classifier) and M3 (intent parser) models, their training scripts, YAML configs, and the old `kaggle_kernel/`/`kaggle_kernel_checker/`/`kaggle_kernel_official/` snapshots were removed — no validated dataset or metric ever existed for them, and carrying three half-built models made the repo harder to reason about than one real one. M2 (GFS-forecast-vs-ERA5-reanalysis bias correction) is the only model actively trained now.
 
-`training/datasets/` and `training/models/` are empty (`.gitkeep` only) — no real dataset or validated weights are currently committed. Trained artifacts under `training/models/` also have **no consumer in `app/`** yet — `/health` explicitly reports `"models": {"runtime_loading": "rule-based fallback only; artifacts are not trusted until registry validation"}`.
+Pipeline: `training/build_matched_pairs.py` builds `training/datasets/matched_pairs.csv` (gitignored — 26 India points × 4 seasons, live Open-Meteo GFS + ERA5 fetch, chronologically sorted) → `training/baseline_models.py` (LightGBM/ridge vs. a zero-correction baseline; **LightGBM currently beats the MLP by ~15% relative on the spatial holdout — this is the recommended model**, not the MLP) and `kaggle_kernel_m2/train_m2.py` (an MLP, kept as the resumable/multi-GPU Kaggle reference implementation — see its module docstring for design notes on target scaling, the chronological + spatial-holdout split, and checkpoint/resume logic) both read that CSV.
 
-`kaggle_kernel_official/official_train.py` is a substantially rewritten, self-contained single-file version of all three training scripts (different/deeper architectures, live HTTP dataset generation inline, Groq-based data augmentation for M3, forced CPU due to actual Kaggle P100/sm_60 incompatibility) — it is not a fork of the local scripts and ignores `training/configs/*.yaml` entirely, hardcoding its own hyperparameters. It's the thing that actually runs on Kaggle.
+`training/models/` is empty except for generated artifacts (`.gitkeep`) — no consumer in `app/` yet. `/health` explicitly reports `"models": {"runtime_loading": "rule-based fallback only; artifacts are not trusted until registry validation"}`.
 
 ### Known state, don't assume otherwise
 
-- Root-level `architecture.md`, `implementation.md`, `report.md`, `setup.md`, `INSTALL.md`, and ten dated `docs/*_2026-09-01.md`/planning docs described an earlier/aspirational system built by a previous developer (a different machine path, a different Kaggle account, a fully-live Groq multi-agent pipeline, nonexistent endpoints like `GET /plan`, self-reported metrics later found unverified, and — in `report.md` — a partially-visible API key fragment) that did not match current code. Deleted as stale in this session; `README.md` and `docs/ARCHITECTURE.md`/`docs/API.md`/`docs/VERIFICATION.md` remain the accurate source of truth.
-- No ML metric currently in this repo is independently validated — `docs/VERIFICATION.md` says so explicitly for the Kaggle-hosted runs.
-- `kaggle_kernel/` is a frozen, byte-identical snapshot of an earlier `app/` (pre-RADE-v2). It is not kept in sync with `app/` — treat changes to `app/` as not automatically applying there.
+- Root-level `architecture.md`, `implementation.md`, `report.md`, `setup.md`, `INSTALL.md`, and ten dated `docs/*_2026-09-01.md`/planning docs described an earlier/aspirational system built by a previous developer (a different machine path, a different Kaggle account, a fully-live Groq multi-agent pipeline, nonexistent endpoints like `GET /plan`, self-reported metrics later found unverified, and — in `report.md` — a partially-visible API key fragment) that did not match current code. Deleted as stale in this session; `README.md` and `docs/ARCHITECTURE.md`/`docs/API.md`/`docs/PROOF_OF_WORK.md` remain the accurate source of truth.
+- No ML metric currently in this repo is independently validated — see `docs/PROOF_OF_WORK.md`.
+- The old RADE v1 snapshot (`kaggle_kernel/`) and the M1/M3 training kernels (`kaggle_kernel_checker/`, `kaggle_kernel_official/`) were deleted along with M1/M3 themselves — do not reference or try to resurrect them.
+
+## Code style
+
+Match the existing codebase: no unnecessary comments (only ones explaining non-obvious *why*, never restating *what* the code does), no emojis, no debug prints — progress-logging prints in long-running scripts (training loops, dataset builds) are the exception and should stay, since they're the only visibility into a multi-hour Kaggle run. Don't create new files without a clear reason.

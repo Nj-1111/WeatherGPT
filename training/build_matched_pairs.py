@@ -4,9 +4,9 @@ paired by (lat, lon, valid_from), sampled across four seasons so the
 bias-correction model sees winter/pre-monsoon/monsoon/post-monsoon patterns,
 not just one arbitrary window.
 
-Ground truth is ERA5 reanalysis, not real station observations — see the
-module docstring in training/train_bias_correction.py. Columns are still
-named obs_* for schema compatibility with that script's load_real().
+Ground truth is ERA5 reanalysis, not real station observations. Columns
+are named obs_* to match what kaggle_kernel_m2/train_m2.py's load_data()
+expects.
 
 Elevation is fetched live from the GFS API response for every point — never
 hardcoded — since a wrong hardcoded elevation would silently corrupt one of
@@ -28,10 +28,9 @@ GFS_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 ERA5_URL = "https://archive-api.open-meteo.com/v1/era5"
 
 # (lat, lon) only — elevation is fetched live from the API, never hardcoded.
-# First 20 points mirror kaggle_kernel_official/official_train.py's existing
-# elevation-diverse spread across India; the last 6 add agricultural-belt
-# coverage (wheat/rice/cotton/soy/horticulture regions), since spray/irrigate/
-# harvest decisions are this app's actual use case.
+# First 20 points are an elevation-diverse spread across India; the last 6
+# add agricultural-belt coverage (wheat/rice/cotton/soy/horticulture regions),
+# since spray/irrigate/harvest decisions are this app's actual use case.
 POINTS: list[tuple[float, float, str]] = [
     (21.14, 79.08, "Nagpur"),
     (19.07, 72.87, "Mumbai"),
@@ -120,11 +119,11 @@ async def build() -> None:
                 print(f"[matched_pairs] {name} ({lat},{lon}) {season}: {kept}/{len(times)} hours kept")
                 time.sleep(0.12)  # be polite to the free API
 
-    # Sort chronologically. train_bias_correction.py's load_real() takes the
-    # tail 15% of *rows* as validation and trusts the file is time-sorted —
-    # with this row count and four season blocks, a chronological sort makes
-    # the tail land entirely within the last (post-monsoon) window, giving a
-    # genuine out-of-season holdout instead of an arbitrary row slice.
+    # Sort chronologically. train_m2.py's three_way_split() takes the tail
+    # 15% of *rows* as validation and trusts the file is time-sorted — with this
+    # row count and four season blocks, a chronological sort makes the tail land
+    # entirely within the last (post-monsoon) window: a genuine out-of-season
+    # holdout, not an arbitrary row slice.
     rows.sort(key=lambda r: r[0])
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -142,9 +141,8 @@ async def build() -> None:
         for name, lat, lon, season, err in failures:
             print(f"  - {name} ({lat},{lon}) {season}: {err}")
     if len(rows) < 4000:
-        print("[matched_pairs] WARNING: fewer than 4000 rows — train_bias_correction.py's "
-              "time-aware split heuristic (n>=4000) will not trigger; it will fall back to "
-              "a random split instead of the intended chronological holdout.")
+        print("[matched_pairs] WARNING: fewer than 4000 rows — downstream training scripts "
+              "may fall back to a random split instead of a chronological holdout.")
 
 
 if __name__ == "__main__":

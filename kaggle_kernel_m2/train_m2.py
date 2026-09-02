@@ -1,41 +1,36 @@
 """
-M2 bias-correction training — Kaggle 2xT4 (or CPU, for local smoke-testing).
+M2 bias correction: MLP trained to predict GFS forecast error against ERA5
+reanalysis. Runs on Kaggle 2xT4 or locally on CPU for smoke testing.
 
-Fixes, relative to kaggle_kernel_official/official_train.py's M2 block:
-  - Real multi-GPU: device is never force-set to CPU; nn.DataParallel wraps the
-    model BEFORE it moves to CUDA (the official script wraps a CPU-pinned model,
-    making DataParallel a no-op there).
-  - Resumable checkpointing: a full checkpoint (model/optimizer/scheduler state +
-    epoch + best_val_loss) is saved every --checkpoint-interval epochs and
-    whenever validation improves. On startup this script looks for an existing
-    checkpoint (locally, or on the Hugging Face repo) and resumes from it instead
-    of restarting at epoch 0.
-  - Every checkpoint is optionally pushed to a Hugging Face model repo, read from
-    Kaggle Secrets (HF_TOKEN) or the environment. Upload is best-effort — a
-    network hiccup during upload never kills the training run.
-  - Per-epoch metrics are appended to metrics_history.jsonl (survives a crash,
-    unlike keeping only the latest epoch's numbers in memory).
-  - Targets are standardized before the loss. Unscaled, a single MSE over
-    [temp_bias, precip_bias] is dominated by temperature (~5.97:1 variance ratio
-    on this dataset), starving the precipitation head of gradient. Metrics are
-    always inverted back to real units (degC / mm).
-  - TWO holdouts, reported separately: a chronological tail (locations seen in
-    training, later time) and a spatial holdout of entire unseen locations. Only
-    the latter reflects deployment, where a query names a village not among the
-    26 training points.
-  - A naive baseline (zero correction, i.e. trusting raw GFS as-is) is computed
-    on both holdouts, so every reported RMSE has a do-nothing comparison.
-  - Reported metrics come from the best-val-loss epoch — the same weights saved
-    as best.pt — not the last epoch.
+training/baseline_models.py runs LightGBM/ridge on the same splits and beats
+this MLP by ~15% relative on held-out locations — check that before trusting
+this model's output. Kept here as the resumable/multi-GPU reference
+implementation, not as the recommended model.
 
-Ground truth is ERA5 reanalysis (see training/train_bias_correction.py's
-docstring) — this script reports results as "vs. ERA5 reanalysis", not as
-validated against real station observations.
+Design notes:
+  - nn.DataParallel wraps the model before .to(device), not after — wrapping
+    a CPU-resident model makes DataParallel a no-op.
+  - Checkpoints (model/optimizer/scheduler state + epoch + best_val_loss) save
+    every --checkpoint-interval epochs and on improvement, locally and
+    optionally to a Hugging Face repo. On restart the script resumes from the
+    latest checkpoint instead of retraining from epoch 0.
+  - Targets are standardized before the loss. Unscaled, temperature bias has
+    ~6x the variance of precipitation bias, so a single MSE over both starves
+    the precipitation head of gradient. Metrics are reported in real units
+    (degC / mm) after inverting the scaling.
+  - Two holdouts: a chronological tail (locations seen in training, later
+    time) and a spatial holdout of entirely unseen locations. Only the
+    spatial holdout reflects deployment, where a query names a village not
+    among the training points.
+  - A zero-correction baseline (trusting raw GFS) is computed on both
+    holdouts so every RMSE has a do-nothing comparison to beat.
+  - Reported metrics are from the best-val-loss epoch, matching the weights
+    saved to best.pt, not the last epoch trained.
 
-Usage (local smoke test, CPU, no HF, tiny run):
+Ground truth is ERA5 reanalysis, not real station observations.
+
+Usage:
     python kaggle_kernel_m2/train_m2.py --epochs 2 --checkpoint-interval 1 --no-hf
-
-Usage (Kaggle, 2xT4, real run):
     python kaggle_kernel_m2/train_m2.py --epochs 30 --hf-repo-id you/weathergpt-m2-bias-correction
 """
 from __future__ import annotations
