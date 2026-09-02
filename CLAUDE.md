@@ -16,10 +16,11 @@ The developer working in this repo owns **only the ML / data / training / infere
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-api.txt      # API dev/test only — no torch, boots backend + runs pytest
-pip install -r requirements.txt          # full: adds ML/training stack (torch, transformers, etc.)
-pip install -r requirements-full.txt     # adds GRIB2/NetCDF/eccodes stack (heavy, rarely needed)
-pip install -r requirements-kaggle.txt   # Kaggle-notebook variant
+pip install -r requirements.txt          # full: ML/training stack (torch, transformers, lightgbm, huggingface_hub, ...)
+pip install -r requirements-full.txt     # adds GRIB2 decoding (cfgrib/eccodes/xarray) on top of requirements.txt
 ```
+Three files, not four — `requirements-kaggle.txt` was deleted (unreferenced by any code/doc/Dockerfile, and the actual Kaggle workflow in `docs/KAGGLE_TRAINING_GUIDE.md` doesn't use it; Kaggle's base image already has everything `kaggle_kernel_m2/train_m2.py` needs except `huggingface_hub`, installed inline in the notebook). `requirements-full.txt` only adds the 3 packages `grib2_adapter.py`/`grib2_placeholder.py` actually import (`cfgrib`, `eccodes`, `xarray`) — it used to also list `netCDF4`/`h5py`/`pyproj`/`paho-mqtt`/`pillow` for NetCDF/HDF5/WIS2-MQTT/image features that were never built; removed as dead install weight, not real optionality.
+
 `requirements.txt`'s `torch` pin is a flexible range (`>=2.3,<3`), not an exact version — an exact pin (`==2.3.1`) has no wheel for Python 3.12+ and hard-fails `pip install` entirely on newer systems (hit and fixed this session on Python 3.14). If `pip` itself is missing and you can't get sudo/`apt install python3-venv` in a sandboxed environment: `curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - --user --break-system-packages`, then `pip install --user --break-system-packages <packages>`. The live API never imports `torch` at request time (see Architecture below), so `requirements-api.txt` is enough to run the app and test suite.
 
 **Run the API:**

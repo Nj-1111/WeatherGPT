@@ -1,5 +1,5 @@
 # Minimal — boots backend + trains all 3 models on CPU or Kaggle T4
-# Full scientific stack (GRIB2/NetCDF/HDF5/eccodes) in requirements-full.txt
+# GRIB2 decoding (cfgrib/eccodes/xarray) in requirements-full.txt
 
 fastapi==0.110.2
 uvicorn[standard]==0.29.0
@@ -23,6 +23,8 @@ numpy==1.26.4
 tqdm==4.66.4
 pyyaml==6.0.1
 accelerate==0.31.0
+lightgbm>=4.0
+huggingface_hub>=0.24
 
 # Geospatial + units (light — no eccodes here)
 shapely==2.0.4
