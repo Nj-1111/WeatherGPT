@@ -88,6 +88,6 @@ Three scripts (`train_semantic_classifier.py`=M1, `train_bias_correction.py`=M2,
 
 ### Known state, don't assume otherwise
 
-- Root-level `architecture.md`, `implementation.md`, `report.md` describe an earlier/aspirational system (Redis, Android client, voice UI, a fully live Groq multi-agent pipeline, specific ML metrics) that does not match current code — treat `README.md` and `docs/ARCHITECTURE.md`/`docs/API.md`/`docs/VERIFICATION.md` as the accurate source of truth instead.
-- No ML metric currently in this repo is independently validated — `docs/VERIFICATION.md` says so explicitly for the Kaggle-hosted runs. Don't cite `report.md`'s M1/M2/M3 numbers as ground truth.
+- Root-level `architecture.md`, `implementation.md`, `report.md`, `setup.md`, `INSTALL.md`, and ten dated `docs/*_2026-09-01.md`/planning docs described an earlier/aspirational system built by a previous developer (a different machine path, a different Kaggle account, a fully-live Groq multi-agent pipeline, nonexistent endpoints like `GET /plan`, self-reported metrics later found unverified, and — in `report.md` — a partially-visible API key fragment) that did not match current code. Deleted as stale in this session; `README.md` and `docs/ARCHITECTURE.md`/`docs/API.md`/`docs/VERIFICATION.md` remain the accurate source of truth.
+- No ML metric currently in this repo is independently validated — `docs/VERIFICATION.md` says so explicitly for the Kaggle-hosted runs.
 - `kaggle_kernel/` is a frozen, byte-identical snapshot of an earlier `app/` (pre-RADE-v2). It is not kept in sync with `app/` — treat changes to `app/` as not automatically applying there.

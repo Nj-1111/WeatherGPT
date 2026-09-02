@@ -18,3 +18,4 @@ weathergpt_outputs/
 wandb/
 lightning_logs/
 graphify-out/
+*.db

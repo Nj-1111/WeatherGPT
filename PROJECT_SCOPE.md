@@ -198,9 +198,9 @@ basic GitHub version control of the code I write.
 
 ## Known inherited issues to fix (from repo audit), relevant to my scope
 
-- Root-level docs (`architecture.md`, `implementation.md`, `report.md`) are
-  stale and describe features that don't exist (Redis, Android, voice UI) —
-  should be archived/rewritten, not treated as spec.
+- Root-level docs (`architecture.md`, `implementation.md`, `report.md`) were
+  stale and described features that don't exist (Redis, Android, voice UI) —
+  deleted in a later cleanup pass rather than treated as spec.
 - Groq/LLM integration exists as dead code (`groq_client.py` is never
   called from the live request path) — needs to be wired in per the
   boundary described above.
