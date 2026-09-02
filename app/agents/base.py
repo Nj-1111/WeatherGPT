@@ -1,27 +1,30 @@
 """AgentResult — structured output for all agents."""
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+
+from datetime import datetime, timezone
+from typing import Any
+
 from pydantic import BaseModel, Field
-from datetime import datetime
+
 
 class Claim(BaseModel):
     claim: str
     value: Any
-    unit: Optional[str] = None
-    evidence_ids: List[str] = Field(default_factory=list)
+    unit: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
     confidence: float = 0.8
-    extra: Dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 class AgentResult(BaseModel):
     agent_name: str
-    claims: List[Claim] = Field(default_factory=list)
-    evidence_ids: List[str] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
     confidence: float = 0.8
-    uncertainty: Optional[str] = None
-    warnings: List[str] = Field(default_factory=list)
-    assumptions: List[str] = Field(default_factory=list)
+    uncertainty: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
     execution_time_ms: int = 0
-    model: Optional[str] = None
+    model: str | None = None
     status: str = "success"  # success, partial, failed
-    errors: List[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    errors: list[str] = Field(default_factory=list)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

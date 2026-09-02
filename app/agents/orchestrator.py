@@ -1,12 +1,16 @@
 """Real multi-agent orchestrator — 8 agents, structured AgentResult, 4-model queue."""
 from __future__ import annotations
-import time, asyncio
-from typing import List, Dict, Any
-from app.agents.base import AgentResult, Claim
-from app.schemas.ceo import CanonicalEvidenceObject
-from app.orchestrator.models import model_for
 
-async def run_context_agent(user_context: Dict[str, Any], question: str) -> AgentResult:
+import asyncio
+import time
+from typing import Any
+
+from app.agents.base import AgentResult, Claim
+from app.orchestrator.models import model_for
+from app.schemas.ceo import CanonicalEvidenceObject
+
+
+async def run_context_agent(user_context: dict[str, Any], question: str) -> AgentResult:
     start=time.time()
     claims=[]
     if user_context:
@@ -15,17 +19,21 @@ async def run_context_agent(user_context: Dict[str, Any], question: str) -> Agen
             claims.append(Claim(claim=f"context.{k}", value=v, evidence_ids=[], confidence=0.9))
     return AgentResult(agent_name="context", claims=claims, confidence=0.9, execution_time_ms=int((time.time()-start)*1000), model=model_for("context"), status="success")
 
-async def run_forecast_agent(ceos: List[CanonicalEvidenceObject]) -> AgentResult:
+async def run_forecast_agent(wio) -> AgentResult:
     start=time.time()
     claims=[]
-    # Find best temperature/precip CEOs
-    for c in ceos:
-        if c.variable in ("temperature_2m","precipitation_amount") and c.evidence_class=="forecast":
-            claims.append(Claim(claim=c.variable, value=c.value, unit=c.unit, evidence_ids=[c.evidence_id], confidence=0.85))
-            if len(claims)>=3: break
-    return AgentResult(agent_name="forecast", claims=claims, evidence_ids=[c.evidence_id for c in ceos[:3]], confidence=0.85, execution_time_ms=int((time.time()-start)*1000), model=model_for("forecast_agent"), status="success" if claims else "partial")
+    # Claims are read off the fused panels so they describe, and cite, exactly the numbers
+    # the user is shown. Slicing unranked CEOs cited evidence unrelated to the claim.
+    for name, panel, value_key, unit in (("precipitation_amount", wio.weather.rain, "value_mm", "mm"),
+                                         ("temperature_max", wio.weather.temperature, "max", "C"),
+                                         ("wind_speed", wio.weather.wind, "value_kmh", "km/h")):
+        if panel:
+            claims.append(Claim(claim=name, value=panel.get(value_key), unit=unit,
+                                evidence_ids=list(panel.get("evidence_ids", [])), confidence=0.85))
+    evidence_ids=[eid for c in claims for eid in c.evidence_ids]
+    return AgentResult(agent_name="forecast", claims=claims, evidence_ids=evidence_ids, confidence=0.85, execution_time_ms=int((time.time()-start)*1000), model=model_for("forecast_agent"), status="success" if claims else "partial")
 
-async def run_warning_agent(ceos: List[CanonicalEvidenceObject]) -> AgentResult:
+async def run_warning_agent(ceos: list[CanonicalEvidenceObject]) -> AgentResult:
     start=time.time()
     warnings=[c for c in ceos if c.evidence_class=="warning"]
     claims=[]
@@ -33,7 +41,7 @@ async def run_warning_agent(ceos: List[CanonicalEvidenceObject]) -> AgentResult:
         claims.append(Claim(claim="warning", value=w.warning_severity, unit="severity", evidence_ids=[w.evidence_id], confidence=0.95))
     return AgentResult(agent_name="warning", claims=claims, evidence_ids=[w.evidence_id for w in warnings], confidence=0.95, warnings=[w.raw_value for w in warnings if w.raw_value], execution_time_ms=int((time.time()-start)*1000), model=model_for("warning_agent"), status="success")
 
-async def run_historical_agent(ceos: List[CanonicalEvidenceObject]) -> AgentResult:
+async def run_historical_agent(ceos: list[CanonicalEvidenceObject]) -> AgentResult:
     start=time.time()
     hist=[c for c in ceos if c.evidence_class in ("reanalysis","climate","observation")]
     claims=[]
@@ -41,25 +49,22 @@ async def run_historical_agent(ceos: List[CanonicalEvidenceObject]) -> AgentResu
         claims.append(Claim(claim=h.variable, value=h.value, unit=h.unit, evidence_ids=[h.evidence_id], confidence=0.7))
     return AgentResult(agent_name="historical", claims=claims, evidence_ids=[c.evidence_id for c in hist[:2]], confidence=0.7, execution_time_ms=int((time.time()-start)*1000), model=model_for("history_agent"), status="success" if hist else "partial")
 
-async def run_observation_agent(ceos: List[CanonicalEvidenceObject]) -> AgentResult:
+async def run_observation_agent(ceos: list[CanonicalEvidenceObject]) -> AgentResult:
     start=time.time()
     obs=[c for c in ceos if c.evidence_class=="observation"]
     claims=[Claim(claim=c.variable, value=c.value, unit=c.unit, evidence_ids=[c.evidence_id], confidence=0.8) for c in obs[:2]]
     return AgentResult(agent_name="observation", claims=claims, evidence_ids=[c.evidence_id for c in obs[:2]], confidence=0.8, execution_time_ms=int((time.time()-start)*1000), model=model_for("observation"), status="success" if obs else "partial")
 
-async def run_decision_agent(wio, user_context: Dict[str, Any], evidence_ids: list[str]) -> AgentResult:
+async def run_decision_agent(result, evidence_ids: list[str]) -> AgentResult:
     start=time.time()
-    from app.rade.v2 import decide
-    try:
-        result = decide(wio, user_context, wio.query.raw_text or "")
-        claims=[Claim(claim="recommended_action", value=result.recommended_action, evidence_ids=evidence_ids, confidence=result.confidence)]
-        for s in result.scenarios[:2]:
-            claims.append(Claim(claim=f"scenario_{s.name}", value=s.probability, unit="probability", evidence_ids=evidence_ids, confidence=result.confidence))
-        return AgentResult(agent_name="decision", claims=claims, confidence=result.confidence, execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"), status="success")
-    except Exception as e:
-        return AgentResult(agent_name="decision", claims=[], confidence=0.5, errors=[str(e)], status="failed", execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"))
+    if result is None:
+        return AgentResult(agent_name="decision", claims=[], confidence=0.5, status="partial", execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"))
+    claims=[Claim(claim="recommended_action", value=result.recommended_action, evidence_ids=evidence_ids, confidence=result.confidence)]
+    for scenario in result.scenarios[:2]:
+        claims.append(Claim(claim=f"scenario_{scenario.name}", value=scenario.probability, unit="probability", evidence_ids=evidence_ids, confidence=result.confidence))
+    return AgentResult(agent_name="decision", claims=claims, confidence=result.confidence, execution_time_ms=int((time.time()-start)*1000), model=model_for("solution_agent"), status="success")
 
-async def run_reviewer_agent(agent_results: List[AgentResult], wio, valid_evidence_ids: set[str]) -> AgentResult:
+async def run_reviewer_agent(agent_results: list[AgentResult], wio, valid_evidence_ids: set[str]) -> AgentResult:
     start=time.time()
     errors=[]
     # Check evidence IDs exist
@@ -78,19 +83,18 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     start=time.time()
     return AgentResult(agent_name="explanation", claims=[], confidence=0.85, execution_time_ms=int((time.time()-start)*1000), model=model_for("explainer_agent"), status="success")
 
-async def run_all_agents(ceos: List[CanonicalEvidenceObject], wio, user_context: Dict[str, Any], lang: str = "en") -> List[AgentResult]:
+async def run_all_agents(ceos: list[CanonicalEvidenceObject], wio, user_context: dict[str, Any], lang: str = "en", decision=None) -> list[AgentResult]:
     # Run independent agents concurrently
-    forecast_task = run_forecast_agent(ceos)
+    forecast_task = run_forecast_agent(wio)
     warning_task = run_warning_agent(ceos)
     hist_task = run_historical_agent(ceos)
     obs_task = run_observation_agent(ceos)
     context_task = run_context_agent(user_context, "")
-    results = await asyncio.gather(forecast_task, warning_task, hist_task, obs_task, context_task)
-    # Decision needs WIO
-    decision = await run_decision_agent(wio, user_context, [c.evidence_id for c in ceos])
-    results = list(results) + [decision]
+    results: list[AgentResult] = list(await asyncio.gather(forecast_task, warning_task, hist_task, obs_task, context_task))
+    decision_result = await run_decision_agent(decision, [c.evidence_id for c in ceos])
+    results.append(decision_result)
     reviewer = await run_reviewer_agent(results, wio, {c.evidence_id for c in ceos})
     results.append(reviewer)
-    explanation = await run_explanation_agent(wio, decision, lang)
+    explanation = await run_explanation_agent(wio, decision_result, lang)
     results.append(explanation)
     return results

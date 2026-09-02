@@ -6,6 +6,25 @@ pythonpath = ["."]
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.lint]
+# Bug-catching rules only. The opinionated defaults left on before (BLE001, RUF012,
+# DTZ007) flag deliberate patterns: per-source blind excepts are the retrieval
+# isolation contract, and adapters declare list-typed class attributes by design.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
 [tool.mypy]
+plugins = ["pydantic.mypy"]
 python_version = "3.10"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# WeatherSourceAdapter.fetch/normalize take **kwargs because each source needs
+# different arguments; retrieval only ever calls them as adapter.fetch(**kwargs).
+# Subclasses naming their arguments is the intended contract, not an LSP violation.
+module = "app.adapters.*"
+disable_error_code = ["override"]
+
+[tool.pydantic-mypy]
+# Decoders pass literal strings into enum-typed fields throughout; pydantic
+# validates and coerces them at runtime.
+init_typed = false

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -55,12 +56,14 @@ POLICIES: dict[str, dict[str, dict[str, float]]] = {
 }
 
 
-def _domain(context: str, user_context: dict[str, Any]) -> str:
-    text = f"{context} {user_context}".casefold()
+def _domain(context: str) -> str | None:
+    """Only the decision context is matched. Including the user-context dict let a stored
+    fact containing "crop" flip the domain of an unrelated question."""
+    text = context.casefold()
     for domain, keywords in {"spray": ("spray", "pesticide"), "irrigate": ("irrigat", "sichai"), "harvest": ("harvest", "crop"), "marine": ("fish", "marine", "boat"), "travel": ("travel", "route", "drive")}.items():
         if any(keyword in text for keyword in keywords):
             return domain
-    return "travel"
+    return None
 
 
 def generate_scenarios(wio) -> tuple[list[Scenario], list[str]]:
@@ -91,9 +94,13 @@ def _utility(action: str, scenario: Scenario, table: dict[str, dict[str, float]]
 
 
 def decide(wio, user_context: dict[str, Any], decision_context: str = "") -> DecisionResult:
-    domain = _domain(decision_context, user_context)
+    domain = _domain(decision_context)
     scenarios, assumptions = generate_scenarios(wio)
     evidence_ids = list(dict.fromkeys(eid for scenario in scenarios for eid in scenario.evidence_ids))
+    if domain is None:
+        return DecisionResult(recommended_action="defer_decision", expected_utility=0, risk=1, confidence=0,
+                              rationale="The question does not match a supported decision domain.",
+                              evidence_ids=evidence_ids, assumptions=assumptions, scenarios=scenarios)
     if not scenarios:
         return DecisionResult(recommended_action="defer_decision", expected_utility=0, risk=1, confidence=0,
                               rationale="Weather evidence is insufficient for a risk-aware recommendation.", evidence_ids=evidence_ids,

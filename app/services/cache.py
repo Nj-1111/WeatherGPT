@@ -1,10 +1,18 @@
-"""Small TTL cache that always retains freshness metadata with cached values."""
+"""Bounded TTL cache.  Cached values always carry their own freshness metadata.
+
+Bounded on purpose: the API is a long-lived process, so an unbounded dict here is a
+memory leak with a slow fuse. Eviction is LRU, and expired entries are swept on write
+rather than left to accumulate until their key happens to be queried again.
+"""
 from __future__ import annotations
 
+import asyncio
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
-import asyncio
+
+from app.config import settings
 
 
 @dataclass
@@ -19,31 +27,48 @@ class CacheEntry:
 
 
 class TTLCache:
-    def __init__(self) -> None:
-        self._entries: dict[str, CacheEntry] = {}
+    def __init__(self, max_entries: int) -> None:
+        self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
         self._lock = asyncio.Lock()
+        self._max_entries = max_entries
         self.hits = 0
         self.misses = 0
+        self.evictions = 0
 
     async def get(self, key: str, allow_stale: bool = False) -> CacheEntry | None:
         async with self._lock:
             entry = self._entries.get(key)
-            if entry and (allow_stale or not entry.stale):
-                self.hits += 1
-                return entry
-            self.misses += 1
-            return None
+            if entry is None:
+                self.misses += 1
+                return None
+            if entry.stale and not allow_stale:
+                del self._entries[key]
+                self.misses += 1
+                return None
+            self._entries.move_to_end(key)
+            self.hits += 1
+            return entry
 
     async def put(self, key: str, value: Any, ttl_seconds: int) -> CacheEntry:
         now = datetime.now(timezone.utc)
         entry = CacheEntry(value=value, retrieved_at=now, expires_at=now + timedelta(seconds=ttl_seconds))
         async with self._lock:
             self._entries[key] = entry
+            self._entries.move_to_end(key)
+            self._evict()
         return entry
+
+    def _evict(self) -> None:
+        for key in [key for key, entry in self._entries.items() if entry.stale]:
+            del self._entries[key]
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+            self.evictions += 1
 
     def status(self) -> dict[str, Any]:
         total = self.hits + self.misses
-        return {"available": True, "entries": len(self._entries), "hit_rate": self.hits / total if total else 0.0}
+        return {"available": True, "entries": len(self._entries), "max_entries": self._max_entries,
+                "evictions": self.evictions, "hit_rate": self.hits / total if total else 0.0}
 
 
-weather_cache = TTLCache()
+weather_cache = TTLCache(settings.weather_cache_max_entries)

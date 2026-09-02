@@ -4,13 +4,11 @@ Maps native field names → canonical variable + statistic + allowed accumulatio
 If semantics differ, values are NOT comparable (never averaged).
 """
 from __future__ import annotations
-import yaml
-from pathlib import Path
-from typing import Dict, Tuple, Optional
 
-# Canonical registry — extensible via variable_registry.yaml
+from collections import defaultdict
+
 # 16+ canonical vars with compatible statistics, units, windows, evidence-class restrictions
-DEFAULT_REGISTRY: Dict[str, Dict] = {
+DEFAULT_REGISTRY: dict[str, dict] = {
     # precipitation family — NOT interchangeable
     "apcp": {"canonical": "precipitation_amount", "statistic": "accumulation", "unit": "kg m-2", "accumulation_hours": [1,3,6,24], "evidence_class": ["forecast","observation","reanalysis"], "note": "GRIB APCP, check accumulation_window"},
     "tp": {"canonical": "precipitation_amount", "statistic": "accumulation", "unit": "mm", "accumulation_hours": [1,3,6,24], "evidence_class": ["forecast","observation"]},
@@ -61,64 +59,29 @@ DEFAULT_REGISTRY: Dict[str, Dict] = {
     "marine_warning": {"canonical": "marine_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
 }
 
-def load_registry(path: Optional[str] = None) -> Dict[str, Dict]:
-    p = Path(path) if path else Path(__file__).parent / "variable_registry.yaml"
-    if p.exists():
-        with open(p) as f:
-            data = yaml.safe_load(f) or {}
-            return {k.lower(): v for k, v in data.items()}
-    return DEFAULT_REGISTRY
-
-REGISTRY = load_registry()
-
-def normalize_field(raw_field: str) -> Optional[Dict]:
-    """Return canonical entry or None if unknown."""
-    if not raw_field:
-        return None
-    key = raw_field.strip().lower()
-    if key in REGISTRY:
-        return REGISTRY[key]
-    # fuzzy: strip spaces/underscores
-    key2 = key.replace(" ", "_").replace("-", "_")
-    if key2 in REGISTRY:
-        return REGISTRY[key2]
-    return None
-
-def are_comparable(var_a: str, stat_a: str, window_a: Optional[float],
-                   var_b: str, stat_b: str, window_b: Optional[float]) -> Tuple[bool, str]:
-    """Semantic gate — only comparable if canonical variable + statistic + compatible window."""
-    if var_a != var_b:
-        return False, f"different variables {var_a} vs {var_b}"
-    if stat_a != stat_b:
-        return False, f"different statistic {stat_a} vs {stat_b}"
-    if stat_a == "accumulation" and stat_b == "accumulation":
-        if window_a is not None and window_b is not None and window_a != window_b:
-            return False, f"accumulation window mismatch {window_a}h vs {window_b}h"
-    return True, "comparable"
+_BY_CANONICAL: dict[str, list[dict]] = defaultdict(list)
+for _entry in DEFAULT_REGISTRY.values():
+    _BY_CANONICAL[_entry["canonical"]].append(_entry)
 
 
 def validate_semantics(variable: str, statistic: str, unit: str | None,
                        evidence_class: str, accumulation_hours: float | None) -> tuple[bool, str]:
     """Validate a CEO against canonical semantics rather than trusting a decoder or an LLM."""
-    entries = [entry for entry in DEFAULT_REGISTRY.values() if entry["canonical"] == variable]
+    entries = _BY_CANONICAL.get(variable)
     if not entries:
         return False, f"unknown canonical variable {variable}"
     allowed_statistics = {entry["statistic"] for entry in entries}
     if statistic not in allowed_statistics:
         return False, f"{variable} does not support statistic {statistic}"
-    restrictions = [entry.get("evidence_class") for entry in entries if entry.get("evidence_class")]
+    restrictions = [entry["evidence_class"] for entry in entries if entry.get("evidence_class")]
     if restrictions and not any(evidence_class in allowed for allowed in restrictions):
         return False, f"{variable} is not valid for evidence class {evidence_class}"
     if statistic == "accumulation":
         if not accumulation_hours or accumulation_hours <= 0:
             return False, "accumulation requires a positive accumulation window"
-        allowed_windows = {window for entry in entries for window in entry.get("accumulation_hours", [])}
+        allowed_windows: set[float] = {window for entry in entries for window in entry.get("accumulation_hours", [])}
         if allowed_windows and accumulation_hours not in allowed_windows:
             return False, f"unsupported accumulation window {accumulation_hours}h"
     if statistic == "probability" and unit not in {None, "%", "1", "probability"}:
         return False, f"invalid probability unit {unit}"
     return True, "valid"
-
-def gold_pairs():
-    """Labelled (raw_field, canonical, statistic) triples for training M1."""
-    return [(raw, e["canonical"], e["statistic"]) for raw, e in DEFAULT_REGISTRY.items()]

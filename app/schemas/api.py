@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -52,14 +53,3 @@ class FeedbackRequest(BaseModel):
     decision_id: str | None = None
     actual_outcome: dict[str, Any]
     user_feedback: str | None = Field(default=None, max_length=2048)
-
-
-class ErrorBody(BaseModel):
-    code: str
-    message: str
-    details: dict[str, Any] = Field(default_factory=dict)
-    request_id: str
-
-
-class ErrorResponse(BaseModel):
-    error: ErrorBody

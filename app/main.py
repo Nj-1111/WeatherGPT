@@ -1,47 +1,89 @@
 """WeatherGPT modular-monolith API.  Weather truth is assembled before language synthesis."""
 from __future__ import annotations
 
+import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
+from app.adapters.http import close_client
 from app.adapters.registry import health_all
 from app.agents.orchestrator import run_all_agents
 from app.config import settings
+from app.context.store import add_feedback, get_context, upsert_fact
 from app.errors import WeatherGPTError
+from app.logging_config import configure_logging, request_id_var
 from app.orchestrator.retrieval_planner import build_retrieval_plan
 from app.rade.v2 import decide
-from app.schemas.api import ContextRequest, DecisionRequest, FeedbackRequest, LocationInput, QueryRequestV1
+from app.schemas.api import (
+    ContextRequest,
+    DecisionRequest,
+    FeedbackRequest,
+    LocationInput,
+    QueryRequestV1,
+)
 from app.schemas.location import ResolvedLocation
 from app.services.cache import weather_cache
 from app.services.evidence_store import evidence_store
-from app.services.location_resolver import LocationAmbiguousError, LocationNotFoundError, extract_location, resolve_location
+from app.services.guardrail import check_question
+from app.services.location_resolver import (
+    LocationAmbiguousError,
+    LocationNotFoundError,
+    extract_location,
+    resolve_location,
+)
+from app.services.rate_limit import RateLimiter
 from app.services.retrieval import retrieve
 from app.services.semantic_gate import validated_evidence
 from app.services.temporal_align import filter_by_window
 from app.services.time_parser import parse_time_window
 from app.services.wio_builder import build_wio
-from app.context.store import add_feedback, get_context, upsert_fact
+
+configure_logging()
+logger = logging.getLogger(__name__)
+_rate_limiter = RateLimiter(settings.rate_limit_per_minute, settings.rate_limit_per_day)
 
 
-app = FastAPI(title="WeatherGPT", version="2.0.0", description="Evidence-backed weather intelligence")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    await close_client()
+
+
+app = FastAPI(title="WeatherGPT", version="2.0.0",
+              description="Evidence-backed weather intelligence", lifespan=lifespan)
 _started_at = time.monotonic()
 _metrics: dict[str, float] = {"requests": 0, "errors": 0, "wio_latency_ms_total": 0, "rade_latency_ms_total": 0}
 
 
+def _envelope(status: int, code: str, message: str, request_id: str, headers=None) -> JSONResponse:
+    return JSONResponse(status_code=status, headers=headers,
+                        content={"error": {"code": code, "message": message, "details": {}, "request_id": request_id}})
+
+
 class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.headers.get("content-length") and int(request.headers["content-length"]) > settings.request_max_bytes:
-            return JSONResponse(status_code=413, content={"error": {"code": "REQUEST_TOO_LARGE", "message": "Request exceeds configured size limit", "details": {}, "request_id": "unavailable"}})
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
+        request_id_var.set(request_id)
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > settings.request_max_bytes:
+            return _envelope(413, "REQUEST_TOO_LARGE", "Request exceeds configured size limit", request_id)
+        if settings.rate_limit_enabled and request.url.path not in {"/", "/health", "/api/v1/health"}:
+            client = request.client.host if request.client else "unknown"
+            retry_after = _rate_limiter.check(client)
+            if retry_after is not None:
+                logger.warning("request.rate_limited", extra={"client": client, "path": request.url.path})
+                return _envelope(429, "RATE_LIMITED", "Too many requests; retry later.", request_id,
+                                 headers={"Retry-After": str(retry_after)})
         started = time.monotonic()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
@@ -55,7 +97,8 @@ if settings.cors_origins:
 
 
 def _error(request: Request, error: WeatherGPTError) -> JSONResponse:
-    _metrics["errors"] += 1
+    if error.status_code >= 500:
+        _metrics["errors"] += 1
     return JSONResponse(status_code=error.status_code, content={"error": {"code": error.code, "message": error.message, "details": error.details, "request_id": request.state.request_id}})
 
 
@@ -71,17 +114,18 @@ async def validation_error(request: Request, exc: RequestValidationError):
 
 @app.exception_handler(Exception)
 async def unhandled_error(request: Request, exc: Exception):
+    logger.exception("request.unhandled_error", extra={"path": request.url.path})
     return _error(request, WeatherGPTError("INTERNAL_ERROR", "Internal server error", {}, 500))
 
 
-def _resolve_location(location: LocationInput | None, question: str) -> ResolvedLocation:
+async def _resolve_location(location: LocationInput | None, question: str) -> ResolvedLocation:
     try:
         if location and location.has_coordinates():
             return ResolvedLocation(raw=location.raw or "coordinates", lat=location.latitude, lon=location.longitude,
                                     confidence=1.0, source="request", normalized_name=location.raw, resolution_method="coordinates")
         if location and location.raw:
-            return resolve_location(location.raw)
-        extracted = extract_location(question)
+            return await resolve_location(location.raw)
+        extracted = await extract_location(question)
         if extracted:
             return extracted
     except LocationAmbiguousError as exc:
@@ -91,10 +135,12 @@ def _resolve_location(location: LocationInput | None, question: str) -> Resolved
     raise WeatherGPTError("LOCATION_REQUIRED", "Provide a city, pincode, or latitude/longitude; no location is stored or inferred.", {}, 422)
 
 
-async def _weather_request(req: QueryRequestV1, request_id: str) -> tuple[Any, list, dict[str, Any], list, Any]:
+async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, Any], list, Any, Any]:
     started = time.monotonic()
-    location = _resolve_location(req.location, req.question)
-    valid_from, valid_to, horizon, time_confidence = parse_time_window(req.question)
+    check_question(req.question)
+    location = await _resolve_location(req.location, req.question)
+    valid_from, valid_to, horizon, time_confidence = parse_time_window(
+        req.question, tz=req.timezone or location.timezone)
     plan = build_retrieval_plan(req.question, horizon)
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
     evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))
@@ -110,12 +156,16 @@ async def _weather_request(req: QueryRequestV1, request_id: str) -> tuple[Any, l
     profile = dict(req.profile)
     if req.user_id:
         profile.update({key: value["value"] for key, value in get_context(req.user_id).items() if key not in profile})
-    agents = await run_all_agents(evidence, wio, profile, req.language)
-    reviewer = next(result for result in agents if result.agent_name == "reviewer")
-    if reviewer.status != "success":
-        raise WeatherGPTError("REVIEW_FAILED", "Evidence-grounding review failed", {"errors": reviewer.errors}, 503)
+    decision = None
+    if plan.decision_context:
+        decision = decide(wio, profile, getattr(req, "decision_type", None) or req.question)
+    agents = await run_all_agents(evidence, wio, profile, req.language, decision)
+    reviewer = next((result for result in agents if result.agent_name == "reviewer"), None)
+    if reviewer is None or reviewer.status != "success":
+        errors = reviewer.errors if reviewer else ["reviewer agent did not run"]
+        raise WeatherGPTError("REVIEW_FAILED", "Evidence-grounding review failed", {"errors": errors}, 503)
     _metrics["wio_latency_ms_total"] += (time.monotonic() - started) * 1000
-    return wio, evidence, retrieval_status, agents, profile
+    return wio, evidence, retrieval_status, agents, profile, decision
 
 
 def _synthesize(wio, decision=None) -> str:
@@ -128,7 +178,9 @@ def _synthesize(wio, decision=None) -> str:
         parts.append(f"Official {wio.official_warning.severity} warning: {wio.official_warning.event}.")
     if decision:
         parts.append(f"Recommendation: {decision.recommended_action}. {decision.rationale}")
-    parts.append(f"Confidence context: {wio.agreement.status}. Evidence IDs: {', '.join(e.evidence_id for e in wio.evidence) or 'none'}.")
+    cited = [e.evidence_id for e in wio.evidence[:3]]
+    parts.append(f"Confidence context: {wio.agreement.status}. Backed by {len(wio.evidence)} evidence records"
+                 + (f", including {', '.join(cited)}." if cited else "."))
     return " ".join(parts)
 
 
@@ -144,15 +196,15 @@ async def health():
     return {"status": "ok", "liveness": True, "readiness": any(s.get("available") for s in sources.values()),
             "uptime_s": int(time.monotonic() - _started_at), "sources": sources,
             "database": {"available": True, "driver": "sqlite"}, "cache": weather_cache.status(),
-            "llm": {"configured": bool(__import__("os").environ.get("GROQ_API_KEY")), "checked": False},
-            "models": {"runtime_loading": "rule-based fallback only; artifacts are not trusted until registry validation"}}
+            "llm": {"configured": bool(settings.groq_api_key), "checked": False},
+            "models": {"bias_correction": "not wired; responses use raw uncorrected forecast evidence"}}
 
 
 @app.post("/wio/query")
 @app.post("/api/v1/wio/query")
 async def wio_query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
-    wio, evidence, retrieval_status, agents, _ = await _weather_request(req, request.state.request_id)
+    wio, evidence, retrieval_status, agents, _, _ = await _weather_request(req)
     return {"wio": wio, "evidence_count": len(evidence), "retrieval": retrieval_status, "agents": agents, "request_id": request.state.request_id}
 
 
@@ -160,11 +212,7 @@ async def wio_query_v1(req: QueryRequestV1, request: Request):
 @app.post("/api/v1/query")
 async def query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
-    wio, evidence, retrieval_status, agents, profile = await _weather_request(req, request.state.request_id)
-    decision = None
-    plan = build_retrieval_plan(req.question, wio.query.intent or "short")
-    if plan.decision_context:
-        decision = decide(wio, profile, req.question)
+    wio, _, retrieval_status, agents, _, decision = await _weather_request(req)
     return {"answer": _synthesize(wio, decision), "wio": wio, "decision": decision, "agents": agents,
             "retrieval": retrieval_status, "request_id": request.state.request_id}
 
@@ -175,8 +223,9 @@ async def query_v1(req: QueryRequestV1, request: Request):
 async def decision_endpoint(req: DecisionRequest, request: Request):
     _metrics["requests"] += 1
     started = time.monotonic()
-    wio, evidence, retrieval_status, agents, profile = await _weather_request(req, request.state.request_id)
-    result = decide(wio, profile, req.decision_type or req.question)
+    wio, evidence, retrieval_status, agents, profile, result = await _weather_request(req)
+    if result is None:
+        result = decide(wio, profile, req.decision_type or req.question)
     result.evidence_ids = [item.evidence_id for item in evidence]
     _metrics["rade_latency_ms_total"] += (time.monotonic() - started) * 1000
     return {"decision": result, "wio": wio, "agents": agents, "retrieval": retrieval_status, "request_id": request.state.request_id}
@@ -186,7 +235,7 @@ async def decision_endpoint(req: DecisionRequest, request: Request):
 async def get_evidence(evidence_id: str):
     evidence = evidence_store.get(evidence_id)
     if evidence is None:
-        raise HTTPException(404, detail={"code": "EVIDENCE_NOT_FOUND", "message": "Evidence is absent or expired from this process"})
+        raise WeatherGPTError("EVIDENCE_NOT_FOUND", "Evidence is absent or expired from this process", {"evidence_id": evidence_id}, 404)
     return evidence
 
 
@@ -207,14 +256,13 @@ async def post_feedback(req: FeedbackRequest):
 
 @app.get("/warnings/active")
 async def active_warnings(location: str, question: str = "warnings today"):
-    response = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), "warnings")
-    wio, _, retrieval, _, _ = response
+    wio, _, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)))
     return {"warnings": [wio.official_warning] if wio.official_warning.active else [], "retrieval": retrieval}
 
 
 @app.get("/forecast")
 async def forecast(location: str, question: str = "weather today"):
-    wio, evidence, retrieval, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), "forecast")
+    wio, evidence, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)))
     return {"wio": wio, "retrieval": retrieval, "evidence_count": len(evidence)}
 
 

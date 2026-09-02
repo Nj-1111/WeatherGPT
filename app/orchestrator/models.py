@@ -40,13 +40,3 @@ def model_for(role: str | int) -> str:
     except ValueError:
         idx = hash(role) % len(PREFERRED_MODELS)
     return PREFERRED_MODELS[idx % len(PREFERRED_MODELS)]
-
-def plan_for_num_agents(n: int):
-    """For n agents, return list of models in order (queues through 4)."""
-    return [PREFERRED_MODELS[i % len(PREFERRED_MODELS)] for i in range(n)]
-
-def describe_routing():
-    lines = [f"orchestrator → {ORCHESTRATOR_MODEL}"]
-    for role in AGENT_ROLES:
-        lines.append(f"{role:20s} → {model_for(role)}")
-    return "\n".join(lines)

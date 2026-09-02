@@ -1,10 +1,13 @@
 """Groq client that respects user's 4-model preference. No llama."""
 from __future__ import annotations
-import os
+
 import asyncio
+import os
 import random
+
 import httpx
-from .models import model_for, ORCHESTRATOR_MODEL
+
+from .models import ORCHESTRATOR_MODEL, model_for
 
 GROQ_API = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -38,12 +41,3 @@ async def generate(messages, *, model: str | None = None, temperature: float = 0
 
 async def orchestrator_generate(messages, **kw):
     return await generate(messages, model=ORCHESTRATOR_MODEL, role="orchestrator", **kw)
-
-if __name__ == "__main__":
-    # Self-test: pings every role so a routing or credentials problem shows up here
-    # rather than inside a request. Costs real tokens.
-    async def _selftest():
-        for role in ["intent_parser","forecast_agent","solution_agent","reviewer_agent","explainer_agent","history_agent"]:
-            txt = await generate([{"role":"user","content":f"Say you are {role} in 2 words"}], role=role, max_tokens=10)
-            print(f"{role} via {model_for(role)} -> {txt.strip()[:60]!r}")
-    asyncio.run(_selftest())

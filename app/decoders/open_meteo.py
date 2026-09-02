@@ -1,15 +1,14 @@
-"""Open-Meteo Ensemble → CEOs. No key. Uses Open-Meteo Ensemble API."""
+"""Open-Meteo forecast payload -> CEOs. Called by OpenMeteoForecastAdapter."""
 from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import List, Dict, Any
-import httpx
+from typing import Any
+
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 
-OPEN_METEO_ENSEMBLE = "https://ensemble-api.open-meteo.com/v1/ensemble"
-OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
-def decode_open_meteo(payload: Dict[str, Any], lat: float, lon: float) -> List[CanonicalEvidenceObject]:
-    out: List[CanonicalEvidenceObject] = []
+def decode_open_meteo(payload: dict[str, Any], lat: float, lon: float) -> list[CanonicalEvidenceObject]:
+    out: list[CanonicalEvidenceObject] = []
     geom = Geometry(type="GridCell", coordinates=[lon, lat], reference=f"{lat:.2f},{lon:.2f}")
     hourly = payload.get("hourly") or {}
     times = hourly.get("time") or []
@@ -62,10 +61,3 @@ def decode_open_meteo(payload: Dict[str, Any], lat: float, lon: float) -> List[C
                 provenance=Provenance(original_source="OPEN_METEO", original_unit="km/h", transformations=["fetched Open-Meteo"]))
             )
     return out
-
-async def fetch_open_meteo(lat: float, lon: float, hourly: str = "temperature_2m,precipitation,precipitation_probability,wind_speed_10m", forecast_days: int = 3) -> Dict[str, Any]:
-    params = {"latitude": lat, "longitude": lon, "hourly": hourly, "forecast_days": forecast_days, "timezone": "UTC"}
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(OPEN_METEO_FORECAST, params=params)
-        r.raise_for_status()
-        return r.json()

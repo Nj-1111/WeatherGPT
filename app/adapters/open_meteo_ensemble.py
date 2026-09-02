@@ -4,13 +4,15 @@ A deterministic mean returned by an endpoint is deliberately rejected: it is not
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
-import httpx
 
 from app.adapters.base import WeatherSourceAdapter
+from app.adapters.http import get_client
+from app.config import settings
+from app.constants import HEALTH_PROBE_LAT, HEALTH_PROBE_LON
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 
 URL_ENSEMBLE = "https://ensemble-api.open-meteo.com/v1/ensemble"
@@ -22,12 +24,11 @@ class OpenMeteoEnsembleAdapter(WeatherSourceAdapter):
     supported_variables = ["temperature_2m", "precipitation_amount"]
 
     async def fetch(self, lat: float, lon: float, **kwargs) -> dict[str, Any]:
-        params = {"latitude": lat, "longitude": lon, "hourly": "temperature_2m,precipitation",
+        params: dict[str, Any] = {"latitude": lat, "longitude": lon, "hourly": "temperature_2m,precipitation",
                   "models": "gfs_seamless", "timezone": "UTC", "forecast_days": kwargs.get("forecast_days", 3)}
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(URL_ENSEMBLE, params=params)
-            response.raise_for_status()
-            return response.json()
+        response = await get_client().get(URL_ENSEMBLE, params=params)
+        response.raise_for_status()
+        return response.json()
 
     def normalize(self, raw: dict[str, Any], lat: float, lon: float, **kwargs) -> list[CanonicalEvidenceObject]:
         hourly = raw.get("hourly", {})
@@ -68,9 +69,11 @@ class OpenMeteoEnsembleAdapter(WeatherSourceAdapter):
     async def health_check(self) -> dict[str, Any]:
         started = time.time()
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(URL_ENSEMBLE, params={"latitude": 21.14, "longitude": 79.08, "hourly": "temperature_2m", "forecast_days": 1})
-                response.raise_for_status()
+            response = await get_client().get(
+                URL_ENSEMBLE,
+                params={"latitude": HEALTH_PROBE_LAT, "longitude": HEALTH_PROBE_LON, "hourly": "temperature_2m", "forecast_days": 1},
+                timeout=settings.source_timeout_seconds)
+            response.raise_for_status()
             return {"available": True, "latency_ms": int((time.time() - started) * 1000), "reason": "endpoint reachable; member fields validated per response"}
         except Exception as exc:
             return {"available": False, "latency_ms": int((time.time() - started) * 1000), "reason": str(exc)}

@@ -17,14 +17,20 @@ it, auditing it, and now owning its development going forward.
 
 **What I *am* responsible for, end to end:**
 1. The **data pipeline** — pulling weather data from multiple sources/APIs
-2. The **ML models** — training, evaluating, versioning, and publishing them
+2. The **ML model's integration path** — model training itself now happens
+   in a separate repo (see `model.md` at the repo root for the full
+   handoff: dataset methodology, results, architecture). This repo owns
+   *consuming* the trained model via a documented HTTP API contract
+   (`app/services/model_client.py`), not training/evaluating/publishing it.
 3. The **LLM orchestration / agent layer** — how multiple LLMs and the
    deterministic pipeline work together to go from a user query to a
    trustworthy weather answer
-4. **Training infrastructure** — Kaggle (dual T4 GPUs) as the training
-   environment, with resumable checkpointing
-5. **Model hosting** — pushing trained weights to a Hugging Face repo
-6. **Inference serving** — the FastAPI backend that loads/calls these models
+4. ~~Training infrastructure~~ — moved to the separate model repo, no
+   longer this repo's concern.
+5. ~~Model hosting~~ — the separate model repo's concern; this repo only
+   calls it over HTTP.
+6. **Inference serving** — the FastAPI backend that calls out to Groq and
+   the external model API
    and LLMs, exposed as a clean, hostable inference endpoint (e.g. via
    Docker, a HF Inference Endpoint, Modal, RunPod, or similar "easy to spin
    up" instance) — this is the *only* deployment surface I care about. No
@@ -132,29 +138,19 @@ citations.
     deterministic template fallback if the LLM call fails or no API key is
     configured.
 
-### The ML models (separate from the LLM orchestration layer)
+### The ML model (separate repo now — see `model.md`)
 
-On top of the deterministic pipeline and the LLM agent layer, there are
-purpose-built small ML models meant to improve specific weak points where
-rule-based logic isn't enough:
-
-- **M1 — Semantic classifier** (DistilBERT-based, 9-label) — classifies
-  weather-related text/claims into semantic categories.
-- **M2 — Bias-correction model** (small MLP, 5 → 128 → 128 → 64 → 2) —
-  learns to correct systematic bias between forecast sources (e.g. GFS vs.
-  ERA5 ground truth), a genuine ML regression/correction task trained on
-  historical forecast-vs-actual pairs.
-- **M3 — Intent parser** (DistilBERT-based, 5-way classifier) — classifies
-  user query intent (forecast / warning / historical / decision / other).
-
-These are the models I actually need to **train properly**: gather a real,
-versioned dataset (not synthetic fallback data), fix the evaluation
-methodology (the inherited training runs used non-held-out splits and at
-least one wrong validation target — this needs to be corrected, not
-repeated), track loss/metrics with proper logging and charts, checkpoint in
-a way that's resumable across Kaggle's session limits, and publish
-validated weights + metrics to a Hugging Face model repo — not just
-checked-in, unverified `.pt` files with self-reported numbers.
+M1 (semantic classifier) and M3 (intent parser) were already deleted with
+no validated dataset ever existing for them (see `CLAUDE.md`). The one
+remaining model — bias correction between a GFS-class forecast and ERA5
+reanalysis, informally still called "M3" from its later, unrelated training
+script — no longer lives in this repo at all. Its dataset construction,
+feature engineering, architecture attempts, and real validated baseline
+results (LightGBM/ridge vs. no-correction, on a real 24,960-row dataset)
+were all moved to `model.md` at the repo root as a handoff document, and
+model training now continues in a separate repo. This repo's only remaining
+responsibility for it is `app/services/model_client.py` — the HTTP client
+consuming whatever that repo eventually publishes as an API.
 
 ---
 
@@ -207,88 +203,65 @@ basic GitHub version control of the code I write.
 - Two parallel RADE implementations exist (v1 discarded-but-computed inside
   the agent layer, v2 the actual client-facing decision) — v1 should be
   removed once the agent layer is updated to call v2.
-- `training/datasets/` and `training/models/` are currently empty
-  placeholders — no real committed dataset or validated weights exist yet.
-  This is the actual starting line for my training work, not a false start.
-- Inherited training runs had methodology problems (wrong validation target
-  for M2, non-held-out splits for M1/M3) — my job is to redo this properly,
-  not inherit the old numbers.
+- ML training (`training/`, `kaggle_kernel_m3/`) has since moved to a
+  separate repo entirely — see `model.md` for the dataset methodology, real
+  validated results so far, and open issues (including that inherited
+  training runs had methodology problems: wrong validation target for M2,
+  non-held-out splits for M1/M3 — worth redoing properly in the new repo,
+  not inheriting the old numbers).
 
 ---
 
 ## MLOps + Inference Hosting Scope (AWS EC2)
 
 This is part of my ownership too — not "DevOps for the app," but the
-minimum operational layer needed to train reproducibly and serve the
-trained models reliably. Scope is deliberately kept to **basic/free-tier
-adjacent EC2 instance types** — this is a SIH project, not a production SaaS,
-so cost-consciousness matters.
-
-### Training-side MLOps (Kaggle → Hugging Face)
-
-1. **Experiment tracking** — every training run logs: config used
-   (hyperparameters), per-epoch/per-step loss (train + val), and any
-   eval metrics, written to a structured log file (JSON lines or CSV),
-   plus loss/metric curves rendered as PNG charts saved alongside.
-2. **Checkpointing** — model + optimizer + scheduler state + current
-   epoch/step saved at a regular interval, not just at the end. This is
-   what makes training **resumable** across Kaggle's ~12-hour session
-   limit — a new session can detect the last checkpoint and continue
-   instead of restarting.
-3. **Auto-push to Hugging Face** — after each checkpoint (or at minimum,
-   each epoch), weights + config + metrics.json are pushed to a HF model
-   repo (`huggingface_hub.upload_folder` or `Repository` API) so training
-   state lives outside the ephemeral Kaggle instance, and the latest
-   checkpoint is always recoverable even if the Kaggle session dies.
-4. **Versioning** — each meaningful run gets a distinct branch or tag in
-   the HF repo (e.g. `m2-bias-correction-v1`, `m2-bias-correction-v2-fixed-split`)
-   so a bad run never silently overwrites a good one.
-5. **Reproducibility** — training config, dataset version/hash, and code
-   commit hash are all logged with the run, so any published metric can be
-   traced back to exactly what produced it (directly addressing the
-   inherited "not validated production metrics" problem).
+minimum operational layer needed to serve the orchestration API reliably.
+Scope is deliberately kept to **basic/free-tier adjacent EC2 instance
+types** — this is a SIH project, not a production SaaS, so
+cost-consciousness matters. Training-side MLOps (experiment tracking,
+checkpointing, Hugging Face publishing) is no longer this repo's concern —
+it belongs to the separate model repo now (see `model.md`).
 
 ### Inference-side MLOps (serving on AWS EC2)
 
-**Goal:** a single FastAPI process, containerized, that loads the trained
-ML models (M1/M2/M3) from the HF repo at startup, runs the deterministic
-CEO→WIO pipeline, calls out to Groq for the LLM agent layer, and exposes
-the existing REST endpoints (`/query`, `/wio/query`, `/decision`, etc.) —
-hosted on a basic EC2 instance, not a fleet, not Kubernetes.
+**Goal:** a single FastAPI process, containerized, that runs the
+deterministic CEO→WIO pipeline, calls out to Groq for the LLM agent layer
+and to an external model API for bias correction (both plain HTTPS calls —
+no local model weights loaded at all), and exposes the existing REST
+endpoints (`/query`, `/wio/query`, `/decision`, etc.) — hosted on a basic
+EC2 instance, not a fleet, not Kubernetes. No local ML runtime means this
+is lighter than originally scoped.
 
-1. **Instance choice** — start on a **t3.micro or t3.small** (or the
-   `t2.micro` free-tier instance if within eligibility) since inference
-   here is CPU-only (DistilBERT-sized classifiers + a small MLP — no GPU
-   needed for serving, only for training). Move to `t3.medium`/`t3.large`
-   only if request latency under real load demands more vCPU/RAM headroom.
+1. **Instance choice** — a **t3.micro or t3.small** (or the `t2.micro`
+   free-tier instance if within eligibility) is enough since the process is
+   pure I/O (weather APIs + Groq + the external model API), no local model,
+   no GPU. Move to `t3.medium`/`t3.large` only if request latency under
+   real load demands more vCPU/RAM headroom.
 2. **Containerization** — the repo already has a `Dockerfile` /
    `docker-compose.yml`; the EC2 box just needs Docker installed and the
    image built/pulled and run — no need for a custom AMI or golden image
    unless you want faster cold starts later.
-3. **Model loading strategy** — at container startup, pull the latest
-   validated model weights from the HF repo (`huggingface_hub.snapshot_download`)
-   into a local volume, rather than baking weights into the Docker image —
-   keeps the image small and lets you update models without rebuilding.
-4. **Secrets** — `GROQ_API_KEY`, `IMD_API_KEY`, `HF_TOKEN`, etc. live in a
-   `.env` file on the instance (not committed) or in AWS Systems Manager
-   Parameter Store if you want them out of the filesystem entirely — basic
-   is fine for now given the SIH scope.
-5. **Process management** — run the container with `docker-compose up -d`
+3. **Secrets** — `GROQ_API_KEY`, `IMD_API_KEY`, `MODEL_API_URL`,
+   `MODEL_API_KEY`, etc. live in a `.env` file on the instance (not
+   committed) or in AWS Systems Manager Parameter Store if you want them
+   out of the filesystem entirely — basic is fine for now given the SIH
+   scope.
+4. **Process management** — run the container with `docker-compose up -d`
    plus `restart: unless-stopped` in the compose file, so the API survives
    an instance reboot without manual intervention. A process manager beyond
    Docker's own restart policy (e.g. systemd wrapping docker-compose) is a
    reasonable but optional add-on, not a hard requirement at this scale.
-6. **Reverse proxy / TLS (optional, minimal)** — if you want a real HTTPS
+5. **Reverse proxy / TLS (optional, minimal)** — if you want a real HTTPS
    endpoint instead of a bare `http://<ec2-ip>:8001`, a lightweight Caddy
    or Nginx container in front handling Let's Encrypt is enough — this is
-   the only "infra" beyond the model-serving box itself that's in scope,
+   the only "infra" beyond the orchestration box itself that's in scope,
    and only if you actually need HTTPS (e.g. for the Android app's HTTP
    client to accept the endpoint).
-7. **Basic monitoring** — the existing `/health` and `/metrics` endpoints
+6. **Basic monitoring** — the existing `/health` and `/metrics` endpoints
    are enough to start; a simple uptime check (even a cron `curl` + email,
    or AWS CloudWatch's basic EC2/instance metrics) covers "is it alive"
    without needing a full observability stack.
-8. **Cost control** — since this is likely intermittently used (demo/judging
+7. **Cost control** — since this is likely intermittently used (demo/judging
    periods), consider stopping the instance when not in active use rather
    than running 24/7, or using an EC2 auto-stop schedule — basic-tier
    instances are cheap but not free indefinitely.

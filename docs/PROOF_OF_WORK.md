@@ -37,18 +37,9 @@ Before these fixes, the exact query above returned `503 REVIEW_FAILED`. After, i
 
 ---
 
-## 2. ML pipeline validity — what's independently verified today
+## 2. ML pipeline validity — moved to a separate repo
 
-**Full training results are pending** — the actual Kaggle GPU run hasn't happened yet (see `docs/KAGGLE_TRAINING_GUIDE.md`; `docs/M2_TRAINING_REPORT.md` will be populated once you run it and share results back). What's verified **right now**, locally, in this session:
-
-- **Real dataset, not synthetic**: `training/build_matched_pairs.py` fetched **24,960 real rows** from live Open-Meteo APIs (GFS forecast vs. ERA5 reanalysis), across 26 India-only locations and 4 seasons (winter/pre-monsoon/monsoon/post-monsoon) in 2024. Zero fetch failures (104/104 point×season combinations succeeded).
-- **Split integrity verified**: the chronological tail-15% validation split falls entirely within `2024-10-09` to `2024-10-14` — zero date overlap with the `2024-01-05`–`2024-10-08` training range. Checked directly against the CSV, not assumed.
-- **Data loading verified against the real file**: `X.shape=(24960, 6)`, `y.shape=(24960, 2)` — confirmed by actually loading `training/datasets/matched_pairs.csv` through the same logic `training/train_bias_correction.py` uses.
-- **A real, working local training run** (CPU, 6 epochs, smoke-test scale, `kaggle_kernel_m2/train_m2.py`): train loss went `2.97 → 2.19`, val loss `2.01 → 1.87`, genuinely learning — not flat/broken. Already beat the naive "no correction" baseline by **15.4%** (temperature) and **12.0%** (precipitation) after just 6 epochs on CPU. A full 30-epoch GPU run should do meaningfully better.
-- **Resumability verified**: killed the training process after epoch 3, restarted it, confirmed it resumed at epoch 4 (not epoch 1) with `metrics_history.jsonl` correctly appended, not overwritten.
-- **HF upload failure handling verified**: ran with a deliberately invalid token — got a clean `401` caught and logged, training completed normally, nothing crashed.
-
-**Not yet verified**: the actual multi-GPU Kaggle run, and whether the model continues improving past epoch 6 rather than overfitting — that's exactly what the real run in `docs/KAGGLE_TRAINING_GUIDE.md` will settle.
+ML model training (GFS-forecast-vs-ERA5-reanalysis bias correction) was moved out of this repo entirely as of this change; `training/` and `kaggle_kernel_m3/` no longer exist here. The real validated baseline numbers this section used to summarize (LightGBM/ridge vs. no-correction, on the real 24,960-row dataset), the dataset construction methodology, and the architecture attempted are all preserved in `model.md` at the repo root, which also documents the HTTP API contract this repo now expects from that model. This document's remaining sections (§1, §3) cover the agent pipeline, not ML training, and are unaffected by this change.
 
 ---
 
@@ -60,4 +51,4 @@ Commits this session (`git log`):
 
 `pytest -q`: **20/20 passing**, confirmed after every change in this list, not just at the end.
 
-What this session did *not* do: wire the LLM (`groq_client.py`) into the live explanation path (still returns empty claims — see `CLAUDE.md`'s "known state" section), or run the actual Kaggle GPU training (that's on you, per `docs/KAGGLE_TRAINING_GUIDE.md`).
+What this session did *not* do: wire the LLM (`groq_client.py`) into the live explanation path (still returns empty claims — see `CLAUDE.md`'s "known state" section), or run the actual Kaggle GPU training (ML training has since moved to a separate repo — see `model.md`).

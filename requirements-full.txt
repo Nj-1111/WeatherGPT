@@ -1,10 +1,10 @@
 # Adds GRIB2 decoding (app/adapters/grib2_adapter.py, app/decoders/grib2_placeholder.py)
-# on top of requirements.txt. Everything else once listed here (netCDF4, h5py, pyproj,
+# on top of requirements-api.txt. Everything else once listed here (netCDF4, h5py, pyproj,
 # paho-mqtt, pillow) was never imported anywhere in this repo — no NetCDF/HDF5/WIS2-MQTT/
 # image-handling code exists — and was removed rather than left as aspirational install
 # weight for features that don't exist.
 
--r requirements.txt
+-r requirements-api.txt
 
 cfgrib==0.9.10.4
 eccodes==1.7.0

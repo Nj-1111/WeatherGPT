@@ -1,9 +1,6 @@
-# Lightweight — everything needed to run the live FastAPI backend and its
-# test suite. No torch/transformers/pandas — the live API is fully
-# rule-based/deterministic and never loads an ML model at request time
-# (see GET /health -> "models": "rule-based fallback only").
-#
-# Use this for API development/testing. Use requirements.txt for training.
+# Everything needed to run the live FastAPI backend and its test suite.
+# The request path is fully deterministic and never loads an ML model
+# (see GET /health -> models.bias_correction).
 #
 #   python3 -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements-api.txt
@@ -13,18 +10,7 @@
 fastapi==0.110.2
 uvicorn[standard]==0.29.0
 pydantic==2.7.4
-python-multipart==0.0.9
 httpx==0.27.2
-python-dotenv==1.0.1
-pyyaml==6.0.1
-
-# Geospatial + units (light — no eccodes here)
-shapely==2.0.4
-pint==0.24.3
-
-# Utils
-tenacity==8.5.0
-orjson==3.10.7
 
 # Tests
 pytest==8.3.3

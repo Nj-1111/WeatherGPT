@@ -1,20 +1,23 @@
 from __future__ import annotations
-from typing import Optional, List
+
 from pydantic import BaseModel
+
 
 class ResolvedLocation(BaseModel):
     raw: str
     lat: float
     lon: float
-    district: Optional[str] = None
-    state: Optional[str] = None
-    block: Optional[str] = None
-    pincode: Optional[str] = None
+    district: str | None = None
+    state: str | None = None
+    block: str | None = None
+    pincode: str | None = None
+    country: str | None = None
+    timezone: str | None = None
     confidence: float = 0.8
     source: str = "nominatim_cache"
-    candidates: List[dict] = []
-    normalized_name: Optional[str] = None
-    administrative_hierarchy: List[str] = []
+    candidates: list[dict] = []
+    normalized_name: str | None = None
+    administrative_hierarchy: list[str] = []
     resolution_method: str = "gazetteer"
     ambiguity_status: str = "resolved"
 

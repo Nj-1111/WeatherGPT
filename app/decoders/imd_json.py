@@ -1,12 +1,31 @@
 """IMD JSON decoder → CEOs. Handles city forecast, current, nowcast, rainfall, district warning schemas."""
 from __future__ import annotations
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.constants import IST
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 
-IST = timezone(timedelta(hours=5, minutes=30))
+logger = logging.getLogger(__name__)
 
-def _parse_time(s: Optional[str]) -> Optional[datetime]:
+
+def _geometry(record: dict[str, Any], reference: str, geometry_type: str = "Point") -> Geometry | None:
+    """No coordinate default. A record without a position used to inherit Nagpur's, which
+    then ranked by distance to the user as though it were local — wrong-location evidence
+    presented as authoritative, with a clean provenance trail hiding it."""
+    lat, lon = record.get("lat"), record.get("lon")
+    if lat is None or lon is None:
+        logger.warning("imd.record_without_coordinates", extra={"reference": reference})
+        return None
+    try:
+        return Geometry(type=geometry_type, coordinates=[float(lon), float(lat)], reference=reference)
+    except (TypeError, ValueError):
+        logger.warning("imd.record_with_invalid_coordinates", extra={"reference": reference})
+        return None
+
+def _parse_time(s: str | None) -> datetime | None:
     if not s:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
@@ -41,14 +60,16 @@ def _ceo_base(source_record_id, evidence_class, variable, value, unit, statistic
         extra=extra or {}
     )
 
-def decode_city_forecast(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
+def decode_city_forecast(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
     """
     Example IMD city forecast record (fields vary):
     {city, forecast_date, temp_max, temp_min, rainfall, humidity, wind_speed, issued_at}
     """
-    out: List[CanonicalEvidenceObject] = []
+    out: list[CanonicalEvidenceObject] = []
     city = record.get("city") or record.get("station") or "unknown"
-    geom = Geometry(type="Point", coordinates=[record.get("lon", 79.08), record.get("lat", 21.14)], reference=city)
+    geom = _geometry(record, city)
+    if geom is None:
+        return []
     issued = _parse_time(record.get("issued_at") or record.get("date"))
     valid_from = _parse_time(record.get("forecast_date") or record.get("valid_from"))
     valid_to = (valid_from + timedelta(hours=24)) if valid_from else None
@@ -62,8 +83,10 @@ def decode_city_forecast(record: Dict[str, Any]) -> List[CanonicalEvidenceObject
         out.append(_ceo_base(city, "forecast", "wind_speed", float(record["wind_speed"]), "km/h", "instant", geom, issued_at=issued, valid_from=valid_from, valid_to=valid_to, source="IMD"))
     return out
 
-def decode_current(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
-    geom = Geometry(type="Point", coordinates=[record.get("lon", 79.08), record.get("lat", 21.14)], reference=record.get("station","unknown"))
+def decode_current(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
+    geom = _geometry(record, record.get("station", "unknown"))
+    if geom is None:
+        return []
     observed = _parse_time(record.get("observed_at") or record.get("time"))
     out = []
     if "temperature" in record:
@@ -72,7 +95,7 @@ def decode_current(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
         out.append(_ceo_base(record.get("station"), "observation", "precipitation_amount", float(record["rainfall"]), "mm", "accumulation", geom, observed_at=observed, accumulation=24, source="IMD"))
     return out
 
-def decode_warning(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
+def decode_warning(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
     """
     District warning: hazards as category codes + colour/severity
     {district, issue_time, valid_from, valid_to, hazard: "heavy rainfall", colour: "orange", severity, category_code}
@@ -86,17 +109,19 @@ def decode_warning(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
     hazard = record.get("hazard") or record.get("event") or "heavy rainfall"
     return [_ceo_base(record.get("district"), "warning", "heavy_rain_warning", None, None, "categorical", geom, issued_at=issued, valid_from=valid_from, valid_to=valid_to, raw_value=hazard, warning_severity=colour, extra={"category_code": record.get("category_code")}, source="IMD")]
 
-def decode_nowcast(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
+def decode_nowcast(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
     """Nowcast with category codes."""
     station = record.get("station") or record.get("district") or "unknown"
-    geom = Geometry(type="Point", coordinates=[record.get("lon",79.08), record.get("lat",21.14)], reference=station)
+    geom = _geometry(record, station)
+    if geom is None:
+        return []
     issued = _parse_time(record.get("issue_time") or record.get("issued_at"))
     valid_from = _parse_time(record.get("valid_from"))
     valid_to = _parse_time(record.get("valid_to"))
     code = record.get("category") or record.get("code") or record.get("condition")
     return [_ceo_base(station, "nowcast", "thunderstorm_probability", None, None, "categorical", geom, issued_at=issued, valid_from=valid_from, valid_to=valid_to, raw_value=str(code), extra={"condition": code}, source="IMD")]
 
-def decode_rainfall(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
+def decode_rainfall(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
     """Rainfall: actual, normal, departure %, category."""
     district = record.get("district", "unknown")
     geom = Geometry(type="Polygon", coordinates=None, reference=district)
@@ -107,7 +132,7 @@ def decode_rainfall(record: Dict[str, Any]) -> List[CanonicalEvidenceObject]:
         out.append(_ceo_base(district, "observation", "precipitation_amount", float(record["actual"]), "mm", "accumulation", geom, observed_at=valid, issued_at=issued, accumulation=24, source="IMD"))
     return out
 
-def decode(record: Dict[str,Any], product: str = "forecast") -> List[CanonicalEvidenceObject]:
+def decode(record: dict[str,Any], product: str = "forecast") -> list[CanonicalEvidenceObject]:
     table = {
         "forecast": decode_city_forecast,
         "city_forecast": decode_city_forecast,

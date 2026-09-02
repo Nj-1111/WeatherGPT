@@ -4,6 +4,4 @@ services:
     build: .
     ports: ["8001:8001"]
     env_file: .env
-    volumes:
-      - ./training/models:/app/training/models
     restart: unless-stopped
