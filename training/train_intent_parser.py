@@ -7,11 +7,10 @@ Usage:
   python training/train_intent_parser.py --epochs 3 --device auto
 """
 from __future__ import annotations
-import argparse, json, re, random
+import argparse, json, random
 from pathlib import Path
 import yaml
 
-# synthetic utterances
 UTTERANCES = [
     ("Will it rain in Nagpur tomorrow afternoon and should I spray pesticide?", {"variables":["precipitation_amount","precipitation_probability","wind_speed"], "time":"tomorrow afternoon", "location":"Nagpur", "decision":"pesticide_spraying"}),
     ("What is the temperature in Delhi tonight?", {"variables":["temperature_2m"], "time":"tonight", "location":"Delhi"}),
@@ -111,7 +110,6 @@ def run_full(args):
         from collections import Counter
         cnt=Counter((r["intent"].get("decision") or "none") for r in rows)
         print(f"[intent] before rebalance {cnt}")
-        max_cnt = max(cnt.values())
         balanced=[]
         for label in label_map:
             lst=[r for r in rows if (r["intent"].get("decision") or "none")==label]

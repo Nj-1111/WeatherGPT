@@ -2,7 +2,7 @@
 from __future__ import annotations
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 
 NS = {"cap": "urn:oasis:names:tc:emergency:cap:1.2"}
@@ -50,7 +50,6 @@ def decode_cap_xml(xml_bytes: bytes) -> List[CanonicalEvidenceObject]:
             valid_to = valid_to.astimezone(timezone.utc) if valid_to else None
         except Exception:
             valid_from, valid_to = issued, None
-        # areas
         areas = []
         for area in info.findall("cap:area", NS) + info.findall("area"):
             desc = _text(area, "areaDesc") or "unknown"

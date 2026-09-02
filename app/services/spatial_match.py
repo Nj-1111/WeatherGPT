@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from typing import List, Tuple
+from typing import List
 from app.schemas.ceo import CanonicalEvidenceObject
 
 def haversine_km(lat1, lon1, lat2, lon2):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple
+from typing import List
 from app.schemas.ceo import CanonicalEvidenceObject
 
 IST = timezone(timedelta(hours=5, minutes=30))

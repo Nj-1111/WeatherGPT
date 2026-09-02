@@ -1,6 +1,6 @@
 """Adapter registry — centralizes health and source selection."""
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict
 from app.adapters.open_meteo_forecast import OpenMeteoForecastAdapter
 from app.adapters.open_meteo_historical import OpenMeteoHistoricalAdapter
 from app.adapters.open_meteo_ensemble import OpenMeteoEnsembleAdapter

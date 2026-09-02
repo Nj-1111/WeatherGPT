@@ -2,8 +2,7 @@
 """Backtest helper: run WIO queries over a CSV and compute Brier/RMSE.
 CSV: question,location_raw,valid_from,valid_to,observed_rain_mm
 """
-import argparse, csv, json, httpx, asyncio
-from pathlib import Path
+import argparse, csv, httpx, asyncio
 
 async def run_one(client, url, q, loc):
     r = await client.post(url, json={"question": q, "location":{"raw": loc}, "lang":"en"})

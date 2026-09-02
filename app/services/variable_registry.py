@@ -119,9 +119,6 @@ def validate_semantics(variable: str, statistic: str, unit: str | None,
         return False, f"invalid probability unit {unit}"
     return True, "valid"
 
-# --- ML helper: gold pairs for training semantic classifier ---
 def gold_pairs():
-    pairs = []
-    for raw, entry in DEFAULT_REGISTRY.items():
-        pairs.append((raw, entry["canonical"], entry["statistic"]))
-    return pairs
+    """Labelled (raw_field, canonical, statistic) triples for training M1."""
+    return [(raw, e["canonical"], e["statistic"]) for raw, e in DEFAULT_REGISTRY.items()]

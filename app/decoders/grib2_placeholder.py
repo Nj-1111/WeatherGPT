@@ -15,7 +15,6 @@ Install full stack:
 from __future__ import annotations
 from pathlib import Path
 from typing import List
-from datetime import datetime, timezone
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 
 def decode_grib2_file(path: str, lat: float, lon: float) -> List[CanonicalEvidenceObject]:

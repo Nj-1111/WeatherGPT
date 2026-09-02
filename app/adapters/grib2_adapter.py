@@ -1,6 +1,5 @@
 """GFS GRIB2 Adapter — isolated as unavailable until eccodes present."""
 from __future__ import annotations
-import time
 from typing import List, Dict, Any
 from app.adapters.base import WeatherSourceAdapter
 

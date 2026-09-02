@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 from app.schemas.ceo import CanonicalEvidenceObject
 from app.schemas.wio import WeatherIntelligenceObject, WIOQuery, WIOWeather, WIOWarning, WIOAgreement, EvidenceSummary
 from app.services.ranker import rank, detect_disagreements

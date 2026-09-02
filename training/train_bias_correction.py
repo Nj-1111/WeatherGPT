@@ -60,10 +60,8 @@ def load_real():
                     print(f"[bias] loaded real matched_pairs {len(df)} rows from {mp}")
                     # Fix lead_hours if it's sequential 0-239 (time-index) -> recompute as lead % 72 (GFS 0-72h cycle)
                     if df["lead_hours"].max() > 100 and df["lead_hours"].nunique() > 100:
-                        # detect sequential pattern
                         df["lead_hours"] = df["lead_hours"] % 72
-                        print(f"[bias] recomputed lead_hours to 0-71 cycle (was time-index)")
-                    # Ensure dtypes and handle missing cols
+                        print("[bias] recomputed lead_hours to 0-71 cycle (was time-index)")
                     for c in ["gfs_t2m_k","gfs_apcp_mm","elevation_m","lead_hours","lat","lon"]:
                         if c not in df.columns:
                             df[c]=0

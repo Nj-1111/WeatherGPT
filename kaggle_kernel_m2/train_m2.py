@@ -54,13 +54,8 @@ import torch
 import torch.nn as nn
 
 
-# --------------------------------------------------------------------------
-# Secrets / environment
-# --------------------------------------------------------------------------
-
-# Different people name this secret differently in the Kaggle UI. Rather than fail
-# silently (the upload just disables itself, which is easy to miss), try the common
-# names and print which one was found. --hf-token-secret overrides for anything else.
+# People name this secret differently in the Kaggle UI, and a miss just silently
+# disables uploads. Try the common names and say which one was found.
 HF_TOKEN_SECRET_NAMES = ("HF_TOKEN", "HF_TOKEN_2", "HUGGINGFACE_TOKEN", "HF_API_TOKEN")
 
 
@@ -139,10 +134,6 @@ def find_data_file(explicit: str | None) -> Path:
     )
 
 
-# --------------------------------------------------------------------------
-# Model
-# --------------------------------------------------------------------------
-
 class MLP(nn.Module):
     def __init__(self, in_dim=6, hidden=64, layers=3, dropout=0.1, out_dim=2):
         super().__init__()
@@ -156,10 +147,6 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-
-# --------------------------------------------------------------------------
-# Data
-# --------------------------------------------------------------------------
 
 FEATURE_COLS = ["gfs_t2m_k", "gfs_apcp_mm", "elevation_m", "lead_hours", "lat", "lon"]
 
@@ -237,10 +224,6 @@ def rmse(pred, true):
     return float(np.sqrt(np.mean((pred - true) ** 2)))
 
 
-# --------------------------------------------------------------------------
-# Checkpointing
-# --------------------------------------------------------------------------
-
 def save_checkpoint(path: Path, epoch, model, optimizer, scheduler, best_val_loss):
     path.parent.mkdir(parents=True, exist_ok=True)
     raw_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -310,10 +293,6 @@ class HFUploader:
             return False
 
 
-# --------------------------------------------------------------------------
-# Training
-# --------------------------------------------------------------------------
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-path", default=None)
@@ -359,9 +338,8 @@ def main():
     print(f"[m2] train {len(tr_idx)} | temporal-val {len(va_idx)} (seen locations, later time) "
           f"| spatial-holdout {len(sp_idx)} ({args.holdout_locations} unseen locations)")
 
-    # Baseline: error of trusting raw GFS with zero correction. The target IS the
-    # bias residual, so "predict zero" error is exactly the RMS of y. Computed on
-    # BOTH holdouts so each model number has a matching do-nothing comparison.
+    # The target is the bias residual, so "predict zero" == trusting raw GFS.
+    # Computed on both holdouts so every model number has a do-nothing comparison.
     baseline = {
         "val_rmse_t": rmse(0.0, y[va_idx, 0]), "val_rmse_p": rmse(0.0, y[va_idx, 1]),
         "spatial_rmse_t": rmse(0.0, y[sp_idx, 0]) if len(sp_idx) else None,
@@ -377,13 +355,9 @@ def main():
     scaler = StandardScaler().fit(X[tr_idx])
     X_scaled = scaler.transform(X).astype(np.float32)
 
-    # Standardize the TARGETS too, and train on the standardized version.
-    # Without this, a single MSE over [temp_bias, precip_bias] is dominated by
-    # temperature: measured on this dataset the variance ratio is ~5.97:1, so the
-    # precipitation head receives ~1/6 of the gradient signal and is effectively
-    # undertrained. Metrics below are always un-scaled back to real units (degC, mm)
-    # so the reported RMSE stays physically interpretable and directly comparable
-    # to the baseline above.
+    # Standardize targets too. Unscaled, one MSE over [temp_bias, precip_bias] is
+    # dominated by temperature (~6:1 variance ratio here), starving the precipitation
+    # head of gradient. Metrics are inverted back to real units before reporting.
     y_scaler = StandardScaler().fit(y[tr_idx])
     y_scaled = y_scaler.transform(y).astype(np.float32)
     print(f"[m2] target scaling: temp sigma={y_scaler.scale_[0]:.4f} degC, "
@@ -405,10 +379,9 @@ def main():
     )
 
     def evaluate(x_tensor, true_real):
-        """Predict, invert target scaling, return RMSE in real units (degC / mm)."""
-        pred_scaled = model(x_tensor).cpu().numpy()
-        pred_real = y_scaler.inverse_transform(pred_scaled)
-        return rmse(pred_real[:, 0], true_real[:, 0]), rmse(pred_real[:, 1], true_real[:, 1])
+        """RMSE in real units (degC / mm), undoing the target scaling."""
+        pred = y_scaler.inverse_transform(model(x_tensor).cpu().numpy())
+        return rmse(pred[:, 0], true_real[:, 0]), rmse(pred[:, 1], true_real[:, 1])
 
     model = MLP(in_dim=X.shape[1], hidden=args.hidden_dim, layers=args.num_layers, dropout=args.dropout)
     if n_gpus > 1:
@@ -474,8 +447,8 @@ def main():
     with open(run_config_path, "w") as f:
         json.dump(run_config, f, indent=2)
 
-    # best_* mirror the epoch that produced best.pt. Reporting last-epoch numbers
-    # alongside a best-epoch checkpoint would describe two different models.
+    # Mirrors the epoch that produced best.pt — reporting last-epoch numbers next to
+    # a best-epoch checkpoint would describe two different models.
     best = {"epoch": None, "val_rmse_t": None, "val_rmse_p": None,
             "spatial_rmse_t": None, "spatial_rmse_p": None}
 

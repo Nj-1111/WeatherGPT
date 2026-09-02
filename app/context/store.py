@@ -1,8 +1,8 @@
 """User context store — SQLite per user_id, fact with provenance."""
 from __future__ import annotations
-import sqlite3, json, time
+import sqlite3
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 
 DB_PATH = Path("weathergpt.db")
@@ -25,12 +25,9 @@ def upsert_fact(user_id: str, fact: str, value: Any, confidence: float = 0.9, so
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.utcnow().isoformat()
-    # Check conflict
-    c.execute("SELECT value FROM user_context WHERE user_id=? AND fact=?", (user_id, fact))
-    row = c.fetchone()
-    if row and row[0] != str(value):
-        # Conflict — keep newer with higher confidence
-        pass
+    # No conflict resolution: a repeat fact overwrites unconditionally, regardless of
+    # the stored confidence. (A SELECT-then-no-op conflict check used to sit here,
+    # costing a query per write while doing nothing.)
     c.execute("INSERT OR REPLACE INTO user_context (user_id,fact,value,confidence,source,created_at,updated_at,confirmed,expiry) VALUES (?,?,?,?,?,?,?,?,?)",
               (user_id, fact, str(value), confidence, source, now, now, int(confirmed), expiry))
     conn.commit()
@@ -44,7 +41,6 @@ def get_context(user_id: str) -> Dict[str, Any]:
     conn.close()
     out={}
     for fact,value,conf,source,confirmed,expiry in rows:
-        # Check expiry
         if expiry and expiry < datetime.utcnow().isoformat():
             continue
         out[fact] = {"value": value, "confidence": conf, "source": source, "confirmed": bool(confirmed)}

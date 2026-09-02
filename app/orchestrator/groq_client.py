@@ -39,11 +39,11 @@ async def generate(messages, *, model: str | None = None, temperature: float = 0
 async def orchestrator_generate(messages, **kw):
     return await generate(messages, model=ORCHESTRATOR_MODEL, role="orchestrator", **kw)
 
-# quick self-test
 if __name__ == "__main__":
-    import asyncio
-    async def _t():
+    # Self-test: pings every role so a routing or credentials problem shows up here
+    # rather than inside a request. Costs real tokens.
+    async def _selftest():
         for role in ["intent_parser","forecast_agent","solution_agent","reviewer_agent","explainer_agent","history_agent"]:
             txt = await generate([{"role":"user","content":f"Say you are {role} in 2 words"}], role=role, max_tokens=10)
             print(f"{role} via {model_for(role)} -> {txt.strip()[:60]!r}")
-    asyncio.run(_t())
+    asyncio.run(_selftest())

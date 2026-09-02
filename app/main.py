@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request

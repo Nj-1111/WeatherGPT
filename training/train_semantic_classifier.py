@@ -9,7 +9,7 @@ Usage:
   python training/train_semantic_classifier.py --epochs 5 --device cuda --amp
 """
 from __future__ import annotations
-import argparse, json, random, os
+import argparse, json, random
 from pathlib import Path
 import yaml
 
@@ -169,8 +169,7 @@ def run_full(args):
         preds = np.argmax(pred.predictions, axis=1)
         return {"accuracy": accuracy_score(labels, preds), "f1": f1_score(labels, preds, average="weighted")}
 
-    # class imbalance handling: compute class weights from train distribution
-    from collections import Counter
+    # class weights from the train distribution, so rare labels aren't ignored
     import torch as _t
     cnt=Counter(r[1] for r in train_rows)
     total=sum(cnt.values())

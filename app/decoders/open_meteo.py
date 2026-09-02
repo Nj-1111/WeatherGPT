@@ -11,25 +11,19 @@ OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 def decode_open_meteo(payload: Dict[str, Any], lat: float, lon: float) -> List[CanonicalEvidenceObject]:
     out: List[CanonicalEvidenceObject] = []
     geom = Geometry(type="GridCell", coordinates=[lon, lat], reference=f"{lat:.2f},{lon:.2f}")
-    # hourly
     hourly = payload.get("hourly") or {}
     times = hourly.get("time") or []
     precip = hourly.get("precipitation") or []
     precip_probability = hourly.get("precipitation_probability") or []
     temp = hourly.get("temperature_2m") or []
     wind = hourly.get("wind_speed_10m") or []
-    issued = None
-    try:
-        # Open-Meteo returns generationtime
-        issued = datetime.now(timezone.utc)
-    except Exception:
-        issued = datetime.now(timezone.utc)
+    issued = datetime.now(timezone.utc)
 
-    for i, t in enumerate(times):  # no artificial cap — forecast_days (set by the caller based on the
-                                    # query window) already bounds how much data Open-Meteo returns; a
-                                    # fixed 48h slice here could silently drop the actual requested window
-                                    # (e.g. "tomorrow afternoon" IST can fall past hour 48 depending on
-                                    # what time of day, UTC, the request is made)
+    # No artificial cap here: forecast_days (set by the caller from the query window)
+    # already bounds what Open-Meteo returns. A fixed 48h slice used to sit here and
+    # could silently drop the requested window entirely — "tomorrow afternoon" IST
+    # lands past hour 48 depending on what time of day, UTC, the request is made.
+    for i, t in enumerate(times):
         try:
             valid = datetime.fromisoformat(t.replace("Z","+00:00"))
             if valid.tzinfo is None:

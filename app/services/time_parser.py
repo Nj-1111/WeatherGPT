@@ -27,8 +27,6 @@ def parse_time_window(text: str, now: datetime = None, tz: timezone = IST):
     elif re.search(r"(\d{1,2})(st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", text_l):
         # e.g., 23rd Aug -> assume current year
         try:
-            import calendar
-            # crude parse
             for i, mon in enumerate(["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"],1):
                 if mon in text_l:
                     d = int(re.search(r"(\d{1,2})", text_l).group(1))
