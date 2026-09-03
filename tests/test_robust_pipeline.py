@@ -8,10 +8,13 @@ not the HTTP transport.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 
+import httpx
 import pytest
 
+from app.config import LLMEndpoint, settings
 from app.llm.client import LLMResult
 from app.schemas.query import QueryIntent
 from app.services import query_extractor
@@ -121,3 +124,27 @@ def test_unknown_intent_value_falls_back_to_unknown_enum(monkeypatch, bad_intent
     monkeypatch.setattr(query_extractor, "small_llm", fake_small_llm)
     result = asyncio.run(query_extractor.extract_and_normalize("weather in Delhi"))
     assert result.intent == QueryIntent.UNKNOWN
+
+
+def test_gemini_endpoint_failure_degrades_to_deterministic_fallback(monkeypatch):
+    """End-to-end through the real gateway (not the small_llm stub used above): a Gemini
+    endpoint configured in settings that fails at the HTTP layer (bad/expired key, rate
+    limit, timeout — anything) must never surface as an exception or a 500. The funnel
+    must still return a valid NormalizedQuery, correctly labelled as the fallback path.
+    """
+    class _FailingClient:
+        async def post(self, url, **kwargs):
+            raise httpx.ConnectTimeout("gemini unreachable")
+
+    endpoint = LLMEndpoint(model="gemini-1.5-flash",
+                           base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                           api_key="invalid-or-expired-key")
+    monkeypatch.setattr("app.llm.client.settings", dataclasses.replace(
+        settings, llm_enabled=True, small_llm_chain=(endpoint,)))
+    monkeypatch.setattr("app.llm.client.get_client", lambda: _FailingClient())
+
+    result = asyncio.run(query_extractor.extract_and_normalize("will it rain in Indore tomorrow"))
+    assert result.extraction_source == "deterministic_fallback"
+    assert result.is_weather_related is True
+    assert result.normalized_location == "Indore"
+    assert result.confidence_score >= settings.query_understanding_confidence_threshold

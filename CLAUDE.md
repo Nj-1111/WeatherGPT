@@ -17,7 +17,8 @@ plain-language explanation of every service (mechanism, connections, faults) and
 best starting point for anyone new to this code.
 
 **Verified state at end of session:** `pytest -q` 107 passed · `ruff check` clean ·
-`mypy app` clean · 6 of 8 sources live.
+`mypy app` clean · 6 of 8 sources live. (A later same-day session took this to 120 tests —
+see the reviewer-gate record below.)
 
 ### What changed, and why
 
@@ -96,14 +97,73 @@ The request is entirely I/O-bound. Location resolution runs before retrieval and
 parallelised with it (retrieval needs the coordinates), but its cache has a 30-day TTL, so
 it only costs on a location's first use.
 
+### Session record — 2026-09-03, reviewer gate and LLM seam
+
+`cloud.md` §2 is closed. The reviewer no longer takes a claim's value on trust.
+
+**The gate.** Every claim declares how its value was derived in `Claim.extra["derivation"]`
+— `sum` / `max` / `min` / `identity` / `none`, with the variable, unit and accumulation
+window it operated on. `app/agents/verification.py:verify_claim` re-runs that derivation over
+the CEOs the claim actually cites and compares. Citing real evidence is necessary but no
+longer sufficient. Two traps the verifier has to handle, both real in the fused panels: the
+rain panel cites a `precipitation_probability` record alongside the amounts it summed (so the
+verifier filters by declared variable *and* window before summing), and the wind panel reports
+km/h from records that may be m/s (so the same conversion is re-applied). Panels now record
+their own `variable` in `wio_builder.py`, which they previously did not — the temperature panel
+picks between `temperature_2m` and `temperature_max` and the claim could not otherwise say which.
+
+Comparison is `math.isclose` against `reviewer_value_rel_tol` / `reviewer_value_abs_tol`,
+because panels round and exact equality would false-fail.
+
+**Failure is split.** A contradicted value, a unit mismatch or an unknown evidence ID is an
+error → 503, as before. A claim shape no verifier recognises is a *warning* — a future claim
+type must not 503 the API just because nobody has written a verifier for it.
+
+**Free text.** `check_prose_grounding` extracts every quantity carrying a unit (mm, %, C,
+km/h) and requires each to match something the pipeline produced, allowing rounding to 0–2
+places. Bare numerals are deliberately not checked — "the next 24 hours" is prose, not a
+weather claim, and checking it yields only false rejections.
+
+**LLM seam wired, off by default.** `run_explanation_agent` calls Groq only when
+`WEATHERGPT_LLM_ENABLED=true` **and** `GROQ_API_KEY` is set. It receives a fact sheet built
+from the WIO panels — never the raw CEO list — and is instructed to introduce no number. The
+explanation is produced *before* the reviewer so the reviewer can check it, but stays last in
+the returned agent list, preserving the existing response contract. Any failure (timeout, dead
+key, empty response) degrades to the deterministic template answer with `status="partial"`; an
+ungrounded number suppresses the explanation rather than failing the request
+(`WEATHERGPT_REVIEWER_PROSE_FAILURE_MODE=fail` makes it fatal). `groq_client.py` was moved onto
+the shared pooled `httpx` client and reads its key from `settings`, matching every adapter.
+
+**Verified:** `pytest -q` 120 passed (13 new in `tests/test_reviewer.py`) · `ruff check` clean
+· `mypy app` clean. Live against real sources: a 72-record Indore window summed to 22.7mm
+passes the reviewer clean; with an invalid `GROQ_API_KEY` the 401 lands as explanation
+`partial` and the request still returns 200 on the template answer. **The Groq success path
+has never run against a real key** — it is covered only by tests with a stubbed client.
+
+**What the gate still cannot do.** It confirms a claim is arithmetically faithful to the
+evidence it cites, not that it cites the *right* evidence. An agent citing a real but
+irrelevant CEO and reporting its value honestly still passes. Relevance is guaranteed by
+construction (claims are built from the fused panels), not by the reviewer.
+
 ### Next steps
+
+**Top open item, ahead of everything below:** `docs/security-audit-2026-09-03.md` §2.1 —
+`user_id`/`session_id` are unauthenticated free strings; any client can read or overwrite
+another user's stored context facts and hijack their follow-up session. Fix before this
+goes near real users.
+
+The small LLM tier is now live: `SMALL_LLM_MODEL=gemini-3.1-flash-lite` via Gemini's
+OpenAI-compatible endpoint (config-only, no code change). `gemini-1.5-flash` and
+`gemini-2.5-flash` are both retired as of 2026-09; `gemini-3.6-flash` exists but returned
+503 "high demand" on every attempt when this was checked — swap the model name in `.env`
+freely if its capacity recovers.
 
 1. **`IMD_API_KEY`** — the only blocked item needing you. Register at
    `api.imd.gov.in/public/login.php` (IP whitelisting; needs the EC2 elastic IP to exist).
    Set `IMD_API_KEY` and `IMD_API_BASE`.
-2. **Close the reviewer gap before wiring the LLM.** `run_reviewer_agent` checks only that
-   cited evidence IDs *exist*, never that the claimed value matches the CEO. Sufficient
-   while agents are deterministic; not sufficient once an LLM writes claims.
+2. **Run the LLM path against a real `GROQ_API_KEY`** — the success path is untested outside
+   stubs, and the model list in `orchestrator/models.py` has never been checked against Groq's
+   live catalogue.
 3. **`app/services/model_client.py`** still does not exist — see `model.md` for the
    contract. Call it between the semantic gate and `build_wio` in `main.py`.
 4. Rate limiting keys on `request.client.host`. Behind a proxy every caller shares one
@@ -115,7 +175,7 @@ it only costs on a location's first use.
 ```bash
 cd ~/weathergpt && source .venv/bin/activate
 pip install -r requirements-api.txt
-pytest -q                                    # expect 107 passed
+pytest -q                                    # expect 120 passed
 ruff check app tests && mypy app             # both clean
 uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
@@ -141,7 +201,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 **Tests:**
 ```bash
-pytest -q                                # full suite (107 tests as of last verified run)
+pytest -q                                # full suite (120 tests as of last verified run)
 pytest tests/test_ceo.py::test_comparable_gate   # single test
 ```
 `testpaths=["tests"]` and `pythonpath=["."]` are set in `pyproject.toml`, so `pytest` runs correctly from repo root without extra flags.
@@ -180,7 +240,7 @@ location_resolver → time_parser → retrieval_planner (deterministic — LLM n
 
 **WIO (`app/schemas/wio.py`)** — the single fused object everything downstream reads from. `weather.rain`/`wind`/`temperature` hold the highest-ranked value per variable (ranked by `0.4·source_authority + 0.25·freshness + 0.20·spatial_proximity + 0.15·quality`, table in `app/services/ranker.py:AUTHORITY`), but `evidence[]` still lists every surviving CEO for audit, and `agreement.status`/`disagreements[]` surface any conflict explicitly. Official warnings are structurally separate from numeric fusion — never blended in.
 
-**Agents (`app/agents/orchestrator.py`)** — currently deterministic Python functions that each derive a claim from the already-built WIO, *not* LLM calls. `reviewer_agent` is a hard gate: any claim citing an `evidence_id` not actually present in the retrieved evidence flips the whole request to a 503. `run_explanation_agent` is the one agent meant to eventually call the LLM — as of the last audit it returns an empty claims list (Groq is not yet wired into the live path; `app/orchestrator/groq_client.py` exists but has no caller from `app/main.py`).
+**Agents (`app/agents/orchestrator.py`)** — seven deterministic Python functions that each derive a claim from the already-built WIO, plus `run_explanation_agent`, the one seam where a language model runs. `reviewer_agent` is a hard gate on two counts: a claim citing an `evidence_id` not present in the retrieved evidence flips the request to a 503, **and** the value attached to that citation is recomputed from the cited evidence (`app/agents/verification.py`) and must match. LLM prose is checked instead for quantities the pipeline never produced. `run_explanation_agent` is inert unless `WEATHERGPT_LLM_ENABLED=true` and `GROQ_API_KEY` is set; it writes prose only, never selects a source, never originates a number, and degrades to the deterministic template answer on any failure.
 
 **RADE (`app/rade/v2.py`, function `decide`)** — the risk-aware decision engine for questions like "should I spray." Builds 2 (or, with ensemble member data, 5-bin) scenarios from `wio.weather.rain`, scores each action as `expected_utility − risk_lambda·downside_risk`, picks the argmax. Returns `defer_decision` rather than guessing when evidence is insufficient — never fabricates a probability or amount. This is the *only* RADE implementation in `app/` — an older parallel v1 (`enumerator.py`/`utility.py`/`policy.py`) existed and was silently computed-but-discarded on every request; it's been removed from `app/` (still present, unmodified, in the separate frozen `kaggle_kernel/app/` snapshot, whose own `main.py` genuinely depends on it — don't delete that copy).
 
