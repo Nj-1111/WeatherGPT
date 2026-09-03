@@ -25,6 +25,10 @@ class QueryRequestV1(BaseModel):
     question: str = Field(min_length=1, max_length=4096)
     location: LocationInput | None = None
     user_id: str | None = Field(default=None, max_length=128)
+    # Conversational follow-up short-circuit key (services/session_router.py). Distinct
+    # from user_id: one user may run several concurrent conversations, and a follow-up
+    # must only ever reuse context from its own conversation.
+    session_id: str | None = Field(default=None, max_length=128)
     language: str = Field(default="en", max_length=16)
     profile: dict[str, Any] = Field(default_factory=dict)
     timezone: str | None = Field(default=None, max_length=64)

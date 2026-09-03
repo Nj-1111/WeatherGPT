@@ -32,7 +32,7 @@ from app.schemas.api import (
 )
 from app.schemas.location import ResolvedLocation
 from app.schemas.query import NormalizedQuery
-from app.services import location_resolver
+from app.services import location_resolver, session_router
 from app.services.cache import weather_cache
 from app.services.evidence_store import evidence_store
 from app.services.guardrail import check_question_fast
@@ -179,12 +179,41 @@ async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, An
     started = time.monotonic()
     check_question_fast(req.question)
     normalized_query = await _understand_query(req.question)
-    extracted_phrase = normalized_query.normalized_location if normalized_query else None
-    time_text = (normalized_query.normalized_time if normalized_query and normalized_query.normalized_time
-                else req.question)
-    location = await _resolve_location(req.location, req.question, extracted_phrase)
-    valid_from, valid_to, horizon, time_confidence = parse_time_window(
-        time_text, tz=req.timezone or location.timezone)
+
+    # An explicit request-level location always wins, exactly as before — the follow-up
+    # short-circuit only ever fires when the caller supplied no location this turn either
+    # way (neither `location` nor a location phrase the extractor found).
+    has_explicit_location = bool(req.location and (req.location.raw or req.location.has_coordinates()))
+    cached_context = None
+    if (req.session_id and normalized_query is not None and not has_explicit_location
+            and settings.follow_up_context_enabled):
+        cached_context = await session_router.evaluate_follow_up(req.session_id, normalized_query)
+
+    if cached_context is not None:
+        location = ResolvedLocation(
+            raw=cached_context.resolved_location_name, lat=cached_context.resolved_lat,
+            lon=cached_context.resolved_lon, timezone=cached_context.timezone, confidence=1.0,
+            source="session_context", normalized_name=cached_context.resolved_location_name,
+            resolution_method="follow_up_cache")
+        if normalized_query and normalized_query.normalized_time:
+            # A new time phrase was given even though the location was carried over —
+            # re-derive the window rather than silently reusing a stale one.
+            valid_from, valid_to, horizon, time_confidence = parse_time_window(
+                normalized_query.normalized_time, tz=req.timezone or location.timezone)
+        else:
+            valid_from, valid_to = cached_context.valid_from, cached_context.valid_to
+            horizon, time_confidence = cached_context.horizon, cached_context.time_confidence
+    else:
+        extracted_phrase = normalized_query.normalized_location if normalized_query else None
+        time_text = (normalized_query.normalized_time if normalized_query and normalized_query.normalized_time
+                    else req.question)
+        location = await _resolve_location(req.location, req.question, extracted_phrase)
+        valid_from, valid_to, horizon, time_confidence = parse_time_window(
+            time_text, tz=req.timezone or location.timezone)
+
+    if req.session_id and settings.follow_up_context_enabled:
+        await session_router.store_context(req.session_id, location, valid_from, valid_to, horizon, time_confidence)
+
     plan = build_retrieval_plan(req.question, horizon)
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
     evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))

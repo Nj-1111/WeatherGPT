@@ -171,6 +171,14 @@ class Settings:
     query_understanding_confidence_threshold: float = float(
         os.getenv("WEATHERGPT_QUERY_UNDERSTANDING_CONFIDENCE_THRESHOLD", "0.7"))
 
+    # Follow-up context — short-circuits geocoding + time parsing for a conversational
+    # follow-up that names no new location. A dedicated (short, fixed) TTL, independent of
+    # session_ttl_seconds: a stale location silently answering a new question is worse than
+    # a cache miss, so this must not inherit whatever TTL general session state settles on.
+    follow_up_context_enabled: bool = _flag("WEATHERGPT_FOLLOW_UP_CONTEXT_ENABLED", "true")
+    follow_up_context_ttl_seconds: int = int(os.getenv("WEATHERGPT_FOLLOW_UP_CONTEXT_TTL_SECONDS", "300"))
+    follow_up_context_max_entries: int = int(os.getenv("WEATHERGPT_FOLLOW_UP_CONTEXT_MAX_ENTRIES", "4096"))
+
     cors_origins: tuple[str, ...] = tuple(
         item.strip() for item in os.getenv("WEATHERGPT_CORS_ORIGINS", "").split(",") if item.strip()
     )
