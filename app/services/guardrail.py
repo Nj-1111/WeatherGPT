@@ -34,25 +34,53 @@ _URL = re.compile(r"https?://", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
+def _fast_reason(text: str) -> str | None:
+    """Length/control-character/injection/URL checks only — no topic judgement.
+
+    Cheap and unconditional: it must run before any LLM call so a junk or
+    injection-shaped payload never reaches (and never costs) the extractor.
+    """
+    if len(text) < settings.guardrail_min_chars:
+        return "Question is too short to identify a weather request."
+    if len(text) > settings.guardrail_max_chars:
+        return f"Question exceeds {settings.guardrail_max_chars} characters."
+    if len(text.split()) > settings.guardrail_max_words:
+        return f"Question exceeds {settings.guardrail_max_words} words."
+    if _CONTROL.search(text):
+        return "Question contains control characters."
+    if _INJECTION.search(text):
+        return "Question contains instruction-injection patterns."
+    if _URL.search(text):
+        return "Question contains a URL."
+    return None
+
+
+def check_question_fast(question: str) -> None:
+    """Raise WeatherGPTError on the cheap, deterministic checks only.
+
+    Topic relevance is NOT checked here — that's the LLM extractor's job
+    (services/query_extractor.py). This exists so garbage/injection input is
+    rejected before it ever reaches the LLM, not instead of the topic check.
+    """
+    if not settings.guardrail_enabled:
+        return
+    reason = _fast_reason((question or "").strip())
+    if reason:
+        raise WeatherGPTError("QUESTION_REJECTED", reason, {"question_length": len(question or "")}, 400)
+
+
 def check_question(question: str) -> None:
-    """Raise WeatherGPTError if the question must not reach retrieval."""
+    """Full deterministic gate: fast checks plus the topic-word check.
+
+    Used directly when the guardrail runs standalone, and as the fallback path
+    inside query_extractor.extract_and_normalize when the LLM is unavailable —
+    so topic relevance still gets *some* check rather than none.
+    """
     if not settings.guardrail_enabled:
         return
     text = (question or "").strip()
-    reason = None
-    if len(text) < settings.guardrail_min_chars:
-        reason = "Question is too short to identify a weather request."
-    elif len(text) > settings.guardrail_max_chars:
-        reason = f"Question exceeds {settings.guardrail_max_chars} characters."
-    elif len(text.split()) > settings.guardrail_max_words:
-        reason = f"Question exceeds {settings.guardrail_max_words} words."
-    elif _CONTROL.search(text):
-        reason = "Question contains control characters."
-    elif _INJECTION.search(text):
-        reason = "Question contains instruction-injection patterns."
-    elif _URL.search(text):
-        reason = "Question contains a URL."
-    elif not has_word(text.casefold(), _TOPIC_WORDS):
+    reason = _fast_reason(text)
+    if reason is None and not has_word(text.casefold(), _TOPIC_WORDS):
         reason = "Question is not a weather request. Ask about weather conditions, or a weather-dependent decision."
     if reason:
         raise WeatherGPTError("QUESTION_REJECTED", reason, {"question_length": len(text)}, 400)

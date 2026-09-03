@@ -18,8 +18,8 @@ from app.adapters.http import close_client
 from app.adapters.registry import health_all
 from app.agents.orchestrator import run_all_agents
 from app.config import settings
-from app.context.store import add_feedback, get_context, upsert_fact
 from app.errors import WeatherGPTError
+from app.llm.client import is_configured
 from app.logging_config import configure_logging, request_id_var
 from app.orchestrator.retrieval_planner import build_retrieval_plan
 from app.rade.v2 import decide
@@ -31,21 +31,25 @@ from app.schemas.api import (
     QueryRequestV1,
 )
 from app.schemas.location import ResolvedLocation
+from app.schemas.query import NormalizedQuery
+from app.services import location_resolver
 from app.services.cache import weather_cache
 from app.services.evidence_store import evidence_store
-from app.services.guardrail import check_question
+from app.services.guardrail import check_question_fast
 from app.services.location_resolver import (
     LocationAmbiguousError,
     LocationNotFoundError,
     extract_location,
     resolve_location,
 )
+from app.services.query_extractor import extract_and_normalize
 from app.services.rate_limit import RateLimiter
 from app.services.retrieval import retrieve
 from app.services.semantic_gate import validated_evidence
 from app.services.temporal_align import filter_by_window
 from app.services.time_parser import parse_time_window
 from app.services.wio_builder import build_wio
+from app.storage import memory_store
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -118,13 +122,30 @@ async def unhandled_error(request: Request, exc: Exception):
     return _error(request, WeatherGPTError("INTERNAL_ERROR", "Internal server error", {}, 500))
 
 
-async def _resolve_location(location: LocationInput | None, question: str) -> ResolvedLocation:
+async def _resolve_location(location: LocationInput | None, question: str,
+                            extracted_phrase: str | None = None) -> ResolvedLocation:
     try:
+        # A half-supplied coordinate used to be ignored, and the caller was then told to
+        # "provide a city, pincode, or latitude/longitude" — the thing they had just done.
+        # Only raised when nothing else can resolve the request, so a lat sent alongside a
+        # place name still resolves by name exactly as before.
+        if location and not location.raw and (location.latitude is None) != (location.longitude is None):
+            missing = "longitude" if location.longitude is None else "latitude"
+            raise WeatherGPTError("LOCATION_INCOMPLETE",
+                                  f"Coordinates need both latitude and longitude; {missing} is missing.",
+                                  {"missing": missing}, 422)
         if location and location.has_coordinates():
             return ResolvedLocation(raw=location.raw or "coordinates", lat=location.latitude, lon=location.longitude,
                                     confidence=1.0, source="request", normalized_name=location.raw, resolution_method="coordinates")
         if location and location.raw:
             return await resolve_location(location.raw)
+        # Prefer the LLM-extracted location phrase (already typo-corrected) over the
+        # deterministic regex extractor; fall back to it only when nothing was extracted.
+        # Routed through the module attribute (not the name imported into this module)
+        # so it resolves dynamically, same as extract_location()'s internal call —
+        # tests patch app.services.location_resolver.resolve_location, not this module's.
+        if extracted_phrase:
+            return await location_resolver.resolve_location(extracted_phrase)
         extracted = await extract_location(question)
         if extracted:
             return extracted
@@ -135,12 +156,35 @@ async def _resolve_location(location: LocationInput | None, question: str) -> Re
     raise WeatherGPTError("LOCATION_REQUIRED", "Provide a city, pincode, or latitude/longitude; no location is stored or inferred.", {}, 422)
 
 
+async def _understand_query(question: str) -> NormalizedQuery | None:
+    """LLM-first extraction funnel: location/time/intent/topic in one call.
+
+    Runs after the free length/injection pre-filter and before geocoding, so a
+    junk payload never reaches the LLM and an off-topic one never reaches a
+    weather source. Returns None when disabled — callers fall back to the
+    original regex-only path untouched.
+    """
+    if not settings.query_understanding_enabled:
+        return None
+    normalized = await extract_and_normalize(question)
+    if not normalized.is_weather_related or normalized.confidence_score < settings.query_understanding_confidence_threshold:
+        raise WeatherGPTError(
+            "QUESTION_REJECTED",
+            "I can only answer weather and climate-related queries. Please ask about the weather in a specific location.",
+            {"confidence_score": normalized.confidence_score, "intent": normalized.intent.value}, 400)
+    return normalized
+
+
 async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, Any], list, Any, Any]:
     started = time.monotonic()
-    check_question(req.question)
-    location = await _resolve_location(req.location, req.question)
+    check_question_fast(req.question)
+    normalized_query = await _understand_query(req.question)
+    extracted_phrase = normalized_query.normalized_location if normalized_query else None
+    time_text = (normalized_query.normalized_time if normalized_query and normalized_query.normalized_time
+                else req.question)
+    location = await _resolve_location(req.location, req.question, extracted_phrase)
     valid_from, valid_to, horizon, time_confidence = parse_time_window(
-        req.question, tz=req.timezone or location.timezone)
+        time_text, tz=req.timezone or location.timezone)
     plan = build_retrieval_plan(req.question, horizon)
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
     evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))
@@ -155,7 +199,7 @@ async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, An
         wio.agreement.notes = (wio.agreement.notes + " ").strip() + "Some incompatible evidence was rejected."
     profile = dict(req.profile)
     if req.user_id:
-        profile.update({key: value["value"] for key, value in get_context(req.user_id).items() if key not in profile})
+        profile.update({key: value["value"] for key, value in memory_store.get_context(req.user_id).items() if key not in profile})
     decision = None
     if plan.decision_context:
         decision = decide(wio, profile, getattr(req, "decision_type", None) or req.question)
@@ -168,7 +212,7 @@ async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, An
     return wio, evidence, retrieval_status, agents, profile, decision
 
 
-def _synthesize(wio, decision=None) -> str:
+def _synthesize(wio, decision=None, agents=None) -> str:
     parts: list[str] = []
     if wio.weather.summary:
         parts.append(wio.weather.summary)
@@ -181,6 +225,11 @@ def _synthesize(wio, decision=None) -> str:
     cited = [e.evidence_id for e in wio.evidence[:3]]
     parts.append(f"Confidence context: {wio.agreement.status}. Backed by {len(wio.evidence)} evidence records"
                  + (f", including {', '.join(cited)}." if cited else "."))
+    # Appended last, and only if it survived the reviewer's grounding check.
+    explanation = next((claim.value for result in (agents or []) if result.agent_name == "explanation"
+                        for claim in result.claims if claim.claim == "explanation"), None)
+    if explanation:
+        parts.append(str(explanation))
     return " ".join(parts)
 
 
@@ -196,7 +245,11 @@ async def health():
     return {"status": "ok", "liveness": True, "readiness": any(s.get("available") for s in sources.values()),
             "uptime_s": int(time.monotonic() - _started_at), "sources": sources,
             "database": {"available": True, "driver": "sqlite"}, "cache": weather_cache.status(),
-            "llm": {"configured": bool(settings.groq_api_key), "checked": False},
+            "llm": {"enabled": settings.llm_enabled,
+                    "small_tier_configured": is_configured("small"),
+                    "big_tier_configured": is_configured("big"),
+                    "role": "transport only; it never selects a source or originates a value",
+                    "checked": False},
             "models": {"bias_correction": "not wired; responses use raw uncorrected forecast evidence"}}
 
 
@@ -213,7 +266,7 @@ async def wio_query_v1(req: QueryRequestV1, request: Request):
 async def query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
     wio, _, retrieval_status, agents, _, decision = await _weather_request(req)
-    return {"answer": _synthesize(wio, decision), "wio": wio, "decision": decision, "agents": agents,
+    return {"answer": _synthesize(wio, decision, agents), "wio": wio, "decision": decision, "agents": agents,
             "retrieval": retrieval_status, "request_id": request.state.request_id}
 
 
@@ -242,7 +295,7 @@ async def get_evidence(evidence_id: str):
 @app.post("/context")
 @app.post("/api/v1/context")
 async def post_context(req: ContextRequest):
-    upsert_fact(req.user_id, req.fact.fact, req.fact.value, req.fact.confidence, req.fact.source, req.fact.confirmed,
+    memory_store.upsert_fact(req.user_id, req.fact.fact, req.fact.value, req.fact.confidence, req.fact.source, req.fact.confirmed,
                 req.fact.expiry.isoformat() if req.fact.expiry else None)
     return {"status": "ok", "user_id": req.user_id, "fact": req.fact.fact}
 
@@ -250,7 +303,7 @@ async def post_context(req: ContextRequest):
 @app.post("/feedback")
 @app.post("/api/v1/feedback")
 async def post_feedback(req: FeedbackRequest):
-    add_feedback(req.user_id, req.decision_id or "unspecified", "stored with decision", str(req.actual_outcome), req.user_feedback or "")
+    memory_store.add_feedback(req.user_id, req.decision_id or "unspecified", "stored with decision", str(req.actual_outcome), req.user_feedback or "")
     return {"status": "recorded"}
 
 

@@ -7,11 +7,49 @@ variable registry, RADE's utility tables — stay with the code that owns them.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class LLMEndpoint:
+    """One OpenAI-compatible chat endpoint. No provider is named anywhere in code —
+    a provider is only ever a base URL and a model string supplied by the environment."""
+    model: str
+    base_url: str
+    api_key: str
+
+    @property
+    def host(self) -> str:
+        """Reported in logs and traces so an operator can see which endpoint answered."""
+        without_scheme = self.base_url.split("://")[-1]
+        return without_scheme.split("/")[0]
+
+
+def _llm_chain(tier: str) -> tuple[LLMEndpoint, ...]:
+    """Primary endpoint plus ordered fallbacks for one tier, read from the environment.
+
+    `{TIER}_LLM_MODEL/_BASE_URL/_KEY`, then `{TIER}_LLM_FALLBACK_{n}_MODEL/_BASE_URL/_KEY`
+    for n=1.. — scanning stops at the first gap so the order in the environment is the
+    order they are tried. An unconfigured tier yields an empty chain, which the client
+    reports as unavailable rather than treating as an error.
+    """
+    endpoints: list[LLMEndpoint] = []
+    model, base_url = os.getenv(f"{tier}_LLM_MODEL", ""), os.getenv(f"{tier}_LLM_BASE_URL", "")
+    if model and base_url:
+        endpoints.append(LLMEndpoint(model, base_url, os.getenv(f"{tier}_LLM_KEY", "")))
+    index = 1
+    while True:
+        prefix = f"{tier}_LLM_FALLBACK_{index}"
+        model, base_url = os.getenv(f"{prefix}_MODEL", ""), os.getenv(f"{prefix}_BASE_URL", "")
+        if not (model and base_url):
+            break
+        endpoints.append(LLMEndpoint(model, base_url, os.getenv(f"{prefix}_KEY", "")))
+        index += 1
+    return tuple(endpoints)
 
 
 @dataclass(frozen=True)
@@ -67,6 +105,35 @@ class Settings:
     rain_possible_probability: float = float(os.getenv("WEATHERGPT_RAIN_POSSIBLE_PROBABILITY", "0.3"))
     measurable_rain_mm: float = float(os.getenv("WEATHERGPT_MEASURABLE_RAIN_MM", "0.5"))
 
+    # Reviewer — the anti-hallucination gate recomputes every claimed value from the
+    # evidence the claim cites. Panels round, so an exact compare would false-fail.
+    reviewer_value_rel_tol: float = float(os.getenv("WEATHERGPT_REVIEWER_VALUE_REL_TOL", "0.01"))
+    reviewer_value_abs_tol: float = float(os.getenv("WEATHERGPT_REVIEWER_VALUE_ABS_TOL", "0.05"))
+    # An ungrounded number in LLM prose suppresses the explanation and answers from the
+    # deterministic template. "fail" instead rejects the whole request with a 503.
+    reviewer_prose_failure_mode: str = os.getenv("WEATHERGPT_REVIEWER_PROSE_FAILURE_MODE", "suppress")
+
+    # LLM — a transport, nothing more. It never selects sources, never resolves a
+    # coordinate, never originates a number. Two tiers, each an ordered chain tried in
+    # order; when every endpoint fails the caller gets a typed unavailable result.
+    llm_enabled: bool = _flag("LLM_ENABLED", "true")
+    llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "8"))
+    # Per-endpoint timeout times chain length is the worst case, and that sits on the
+    # request path. This caps the whole chain so a long fallback list cannot stall a user.
+    llm_total_timeout_seconds: float = float(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", "20"))
+    llm_max_words: int = int(os.getenv("WEATHERGPT_LLM_MAX_WORDS", "120"))
+    small_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("SMALL"))
+    big_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("BIG"))
+
+    # Storage backends. The switch exists so promotion is a config change, not a rewrite;
+    # today only the in-process value is implemented and anything else fails loudly at
+    # import rather than silently falling back to memory.
+    session_backend: str = os.getenv("SESSION_BACKEND", "memory").strip().lower()
+    db_backend: str = os.getenv("DB_BACKEND", "sqlite").strip().lower()
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
+    session_max_entries: int = int(os.getenv("SESSION_MAX_ENTRIES", "4096"))
+    conversation_max_turns: int = int(os.getenv("CONVERSATION_MAX_TURNS", "20"))
+
     # Time parsing
     default_timezone: str = os.getenv("WEATHERGPT_DEFAULT_TIMEZONE", "Asia/Kolkata")
 
@@ -83,7 +150,6 @@ class Settings:
     # Source credentials and endpoints
     cap_feed_url: str = os.getenv("CAP_FEED_URL", "https://cap-sources.s3.amazonaws.com/in-imd-en/rss.xml")
     cap_max_alerts: int = int(os.getenv("WEATHERGPT_CAP_MAX_ALERTS", "25"))
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     imd_api_key: str = os.getenv("IMD_API_KEY", "")
     imd_api_base: str = os.getenv("IMD_API_BASE", "")
     # api.met.no rejects generic User-Agents; it must identify the deployment.
@@ -97,6 +163,13 @@ class Settings:
     guardrail_min_chars: int = int(os.getenv("WEATHERGPT_GUARDRAIL_MIN_CHARS", "3"))
     guardrail_max_chars: int = int(os.getenv("WEATHERGPT_GUARDRAIL_MAX_CHARS", "512"))
     guardrail_max_words: int = int(os.getenv("WEATHERGPT_GUARDRAIL_MAX_WORDS", "60"))
+
+    # Query understanding — LLM-first location/time/intent/topic extraction, ahead of
+    # geocoding. Mandatory on the request path by product decision; the confidence floor
+    # is where a low-confidence LLM read is treated the same as off-topic.
+    query_understanding_enabled: bool = _flag("WEATHERGPT_QUERY_UNDERSTANDING_ENABLED", "true")
+    query_understanding_confidence_threshold: float = float(
+        os.getenv("WEATHERGPT_QUERY_UNDERSTANDING_CONFIDENCE_THRESHOLD", "0.7"))
 
     cors_origins: tuple[str, ...] = tuple(
         item.strip() for item in os.getenv("WEATHERGPT_CORS_ORIGINS", "").split(",") if item.strip()
