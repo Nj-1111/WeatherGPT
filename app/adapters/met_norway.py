@@ -20,9 +20,6 @@ FORECAST_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 
 class MetNorwayAdapter(WeatherSourceAdapter):
     source_name = "MET_NORWAY"
-    supported_evidence_classes = ["forecast"]
-    supported_variables = ["temperature_2m", "precipitation_amount", "wind_speed", "humidity",
-                           "pressure_msl", "cloud_cover"]
 
     def _headers(self) -> dict[str, str]:
         return {"User-Agent": settings.met_norway_user_agent}

@@ -9,8 +9,6 @@ from app.schemas.ceo import CanonicalEvidenceObject
 
 class WeatherSourceAdapter(ABC):
     source_name: str
-    supported_evidence_classes: list[str]
-    supported_variables: list[str]
 
     @abstractmethod
     async def fetch(self, **kwargs) -> Any:

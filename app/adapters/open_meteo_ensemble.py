@@ -20,8 +20,6 @@ URL_ENSEMBLE = "https://ensemble-api.open-meteo.com/v1/ensemble"
 
 class OpenMeteoEnsembleAdapter(WeatherSourceAdapter):
     source_name = "GEFS"
-    supported_evidence_classes = ["forecast"]
-    supported_variables = ["temperature_2m", "precipitation_amount"]
 
     async def fetch(self, lat: float, lon: float, **kwargs) -> dict[str, Any]:
         params: dict[str, Any] = {"latitude": lat, "longitude": lon, "hourly": "temperature_2m,precipitation",

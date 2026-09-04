@@ -15,8 +15,6 @@ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 class OpenMeteoForecastAdapter(WeatherSourceAdapter):
     source_name = "OPEN_METEO"
-    supported_evidence_classes = ["forecast"]
-    supported_variables = ["temperature_2m","precipitation_amount","precipitation_probability","wind_speed","humidity","pressure_msl","cloud_cover"]
 
     async def fetch(self, lat: float, lon: float, **kwargs) -> dict[str, Any]:
         hourly = kwargs.get("hourly", "temperature_2m,precipitation,precipitation_probability,wind_speed_10m,relative_humidity_2m,pressure_msl,cloud_cover")

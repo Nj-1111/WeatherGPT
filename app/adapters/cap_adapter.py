@@ -23,9 +23,6 @@ logger = logging.getLogger(__name__)
 
 class CapAdapter(WeatherSourceAdapter):
     source_name = "CAP"
-    supported_evidence_classes = ["warning"]
-    supported_variables = ["heavy_rain_warning", "thunderstorm_warning", "cyclone_warning",
-                           "heat_warning", "flood_warning", "marine_warning"]
 
     async def fetch(self, xml_bytes: bytes | None = None, **kwargs) -> list[bytes]:
         if xml_bytes is not None:

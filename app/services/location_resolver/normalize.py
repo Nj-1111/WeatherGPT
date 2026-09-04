@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+from app.services.time_parser import MONTH_PATTERN
+
 # Historical/colloquial renames. This is alias normalization, NOT a gazetteer — geocoding
 # providers supply the actual coordinates. Kept deliberately small; entries earn their
 # place only when providers genuinely fail on the old name (verified: "Bombay" resolves
@@ -39,15 +41,39 @@ _LEAD_PATTERNS = [
     r"\b(?:in|at|for|around|near)\b",
 ]
 
-# Trailing time expressions that are not part of the place name.
+# Trailing RELATIVE time expressions that are not part of the place name.
 _TRAILING_TIME = re.compile(
     r"\b(today|tonight|tomorrow|yesterday|now|currently|"
     r"day\s+after\s+tomorrow|next\s+week|this\s+week|this\s+weekend|weekend|"
     r"next\s+\w+day|coming\s+\w+day|"
+    r"(?:mon|tues|wednes|thurs|fri|satur|sun)day|"
     r"in\s+\d+\s+hours?|next\s+\d+\s+days?|"
     r"morning|afternoon|evening|night)\b.*$",
     re.IGNORECASE,
 )
+
+# Trailing ABSOLUTE dates and clock times. A separate pattern because these carry digits
+# and usually arrive attached to a preposition, where the relative words above do not.
+# Without this the geocoder was handed "Rajkot on 2026-08-01" and answered 404 — after
+# two upstream calls and 1.26s, for a question the time parser understood perfectly.
+_TRAILING_ABSOLUTE = re.compile(
+    rf"\s*(?:\b(?:on|at|for|from|during|by|before|after)\s+)?(?:"
+    rf"\d{{4}}-\d{{1,2}}-\d{{1,2}}"                                   # 2026-08-01
+    rf"|\d{{1,2}}\s*[:.]\s*\d{{2}}\s*(?:[ap]\.?m\.?)?"                # 17:00, 5.30pm
+    rf"|\d{{1,2}}\s*[ap]\.?m\.?(?![a-z])"                             # 5pm
+    rf"|\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{MONTH_PATTERN})\b"             # 5 aug, 3rd october
+    rf"|(?:{MONTH_PATTERN})\s+\d{{1,2}}(?:st|nd|rd|th)?\b"             # august 5
+    rf").*$",
+    re.IGNORECASE,
+)
+
+# "at 6" is a time; a bare trailing number is not, so the preposition is required here.
+_TRAILING_BARE_HOUR = re.compile(r"\s*\bat\s+\d{1,2}\s*(?:o'?clock)?\s*$", re.IGNORECASE)
+
+# Removing "monday" from "Nagpur on monday" leaves the preposition stranded, and
+# "Nagpur on" geocodes no better than "Nagpur on monday" did.
+_DANGLING_PREPOSITION = re.compile(r"\s+\b(?:on|at|for|from|during|by|before|after|in)\s*$",
+                                   re.IGNORECASE)
 
 _PUNCT_EDGES = re.compile(r"^[\s,.;:!?'\"-]+|[\s,.;:!?'\"-]+$")
 _WHITESPACE = re.compile(r"\s+")
@@ -94,7 +120,9 @@ def extract_place_phrase(text: str) -> str | None:
         if not match:
             continue
         tail = text[match.end():]
-        tail = _TRAILING_TIME.sub("", tail)
+        for stripper in (_TRAILING_ABSOLUTE, _TRAILING_TIME, _TRAILING_BARE_HOUR,
+                         _DANGLING_PREPOSITION):
+            tail = stripper.sub("", tail)
         tail = _PUNCT_EDGES.sub("", _WHITESPACE.sub(" ", tail).strip())
         # Place names are short; a long tail means the regex caught a sentence, not a place.
         if tail and len(tail.split()) <= 5:

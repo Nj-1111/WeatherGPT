@@ -8,11 +8,19 @@ from app.config import settings
 from app.constants import IST
 
 _MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+# Each month spelled out explicitly rather than as a prefix plus \w*. The prefix form let
+# the month group swallow any suffix, so "maybe 5" matched as May 5th — confidently, and
+# with a horizon far enough out to reroute retrieval to the historical sources.
+MONTH_PATTERN = "|".join((
+    "jan(?:uary)?", "feb(?:ruary)?", "mar(?:ch)?", "apr(?:il)?", "may", "jun(?:e)?",
+    "jul(?:y)?", "aug(?:ust)?", "sep(?:t(?:ember)?)?", "oct(?:ober)?", "nov(?:ember)?",
+    "dec(?:ember)?",
+))
 _ISO_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 # The day must sit next to the month name; searching the whole sentence for digits made
 # "2 pm on Aug 5" resolve to August 2nd.
-_DAY_MONTH = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({'|'.join(_MONTHS)})\b")
-_MONTH_DAY = re.compile(rf"\b({'|'.join(_MONTHS)})\w*\s+(\d{{1,2}})(?:st|nd|rd|th)?\b")
+_DAY_MONTH = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({MONTH_PATTERN})\b")
+_MONTH_DAY = re.compile(rf"\b({MONTH_PATTERN})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b")
 _IN_HOURS = re.compile(r"\bin (\d+) hours?\b")
 
 
@@ -57,7 +65,7 @@ def parse_time_window(text: str, now: datetime | None = None, tz: tzinfo | str |
         groups = day_month.groups()
         day, month = (groups[0], groups[1]) if groups[0].isdigit() else (groups[1], groups[0])
         try:
-            base = datetime(now.year, _MONTHS.index(month) + 1, int(day), tzinfo=tz)
+            base = datetime(now.year, _MONTHS.index(month[:3]) + 1, int(day), tzinfo=tz)
             if base < now:
                 base = base.replace(year=now.year + 1)
             confidence = 0.8

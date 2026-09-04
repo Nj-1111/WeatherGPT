@@ -12,8 +12,6 @@ from app.decoders.imd_json import decode
 
 class ImdAdapter(WeatherSourceAdapter):
     source_name = "IMD"
-    supported_evidence_classes = ["forecast","observation","warning","reanalysis"]
-    supported_variables = ["temperature_2m","precipitation_amount","wind_speed","heavy_rain_warning"]
 
     async def fetch(self, **kwargs) -> Any:
         key = settings.imd_api_key

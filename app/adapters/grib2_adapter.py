@@ -18,19 +18,17 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import httpx
-
 from app.adapters.base import WeatherSourceAdapter
+from app.adapters.http import get_client
+from app.config import settings
 
 NOMADS_BASE = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 NOMADS_HEALTH_URL = "https://nomads.ncep.noaa.gov/"
-USER_AGENT = "WeatherGPT/1.0 (weather-intelligence backend; contact via repo issues)"
 
 CYCLE_HOURS = (0, 6, 12, 18)
 PUBLISH_LATENCY_HOURS = 5.0
 MAX_CYCLE_FALLBACKS = 2
 SUBREGION_BOX_DEG = 0.3
-FETCH_TIMEOUT_SECONDS = 8.0
 
 
 def _candidate_cycles(now: datetime, max_fallbacks: int = MAX_CYCLE_FALLBACKS) -> list[datetime]:
@@ -78,8 +76,6 @@ def _build_request(run_dt: datetime, lead_hours: int, lat: float, lon: float) ->
 
 class Grib2Adapter(WeatherSourceAdapter):
     source_name = "GFS"
-    supported_evidence_classes = ["forecast"]
-    supported_variables = ["temperature_2m", "precipitation_amount"]
 
     async def fetch(self, lat: float, lon: float, **kwargs) -> Any:
         try:
@@ -96,11 +92,10 @@ class Grib2Adapter(WeatherSourceAdapter):
             lead_hours = _snap_lead_hours(_lead_hours(run_dt, valid_from))
             url, params = _build_request(run_dt, lead_hours, lat, lon)
             try:
-                async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_SECONDS, headers={"User-Agent": USER_AGENT}) as client:
-                    r = await client.get(url, params=params)
-                    r.raise_for_status()
-                    if len(r.content) < 200:
-                        raise RuntimeError(f"NOMADS returned an empty subset for cycle {run_dt.isoformat()} f{lead_hours:03d} — likely not yet published")
+                r = await get_client().get(url, params=params, timeout=settings.source_timeout_seconds)
+                r.raise_for_status()
+                if len(r.content) < 200:
+                    raise RuntimeError(f"NOMADS returned an empty subset for cycle {run_dt.isoformat()} f{lead_hours:03d} — likely not yet published")
                 fd, path = tempfile.mkstemp(suffix=".grib2")
                 with os.fdopen(fd, "wb") as f:
                     f.write(r.content)
@@ -128,9 +123,8 @@ class Grib2Adapter(WeatherSourceAdapter):
         except Exception as exc:
             return {"available": False, "latency_ms": 0, "reason": f"missing eccodes/cfgrib/xarray (install requirements-full.txt): {exc}"}
         try:
-            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": USER_AGENT}) as client:
-                r = await client.head(NOMADS_HEALTH_URL)
-                r.raise_for_status()
+            r = await get_client().head(NOMADS_HEALTH_URL, timeout=settings.source_timeout_seconds)
+            r.raise_for_status()
             return {"available": True, "latency_ms": int((time.time() - start) * 1000), "reason": "ok"}
         except Exception as exc:
             return {"available": False, "latency_ms": int((time.time() - start) * 1000), "reason": f"NOMADS unreachable: {exc}"}

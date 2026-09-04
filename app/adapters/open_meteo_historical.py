@@ -15,8 +15,6 @@ URL_ERA5 = "https://archive-api.open-meteo.com/v1/era5"
 
 class OpenMeteoHistoricalAdapter(WeatherSourceAdapter):
     source_name = "ERA5"
-    supported_evidence_classes = ["reanalysis","climate"]
-    supported_variables = ["temperature_2m","precipitation_amount","wind_speed"]
 
     async def fetch(self, lat: float, lon: float, start_date: str, end_date: str, **kwargs) -> dict[str, Any]:
         params: dict[str, Any] = {"latitude": lat, "longitude": lon, "start_date": start_date, "end_date": end_date, "hourly": "temperature_2m,precipitation,wind_speed_10m", "timezone": "UTC"}

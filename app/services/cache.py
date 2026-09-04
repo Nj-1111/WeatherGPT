@@ -58,6 +58,10 @@ class TTLCache:
             self._evict()
         return entry
 
+    async def delete(self, key: str) -> None:
+        async with self._lock:
+            self._entries.pop(key, None)
+
     def _evict(self) -> None:
         for key in [key for key, entry in self._entries.items() if entry.stale]:
             del self._entries[key]

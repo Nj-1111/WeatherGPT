@@ -15,8 +15,6 @@ POWER_URL = "https://power.larc.nasa.gov/api/temporal/hourly/point"
 
 class NasaPowerAdapter(WeatherSourceAdapter):
     source_name = "NASA_POWER"
-    supported_evidence_classes = ["reanalysis","observation"]
-    supported_variables = ["temperature_2m","precipitation_amount"]
 
     async def fetch(self, lat: float, lon: float, start: str, end: str, **kwargs) -> dict[str, Any]:
         params: dict[str, Any] = {"parameters": "T2M,PRECTOTCORR", "community": "AG", "longitude": lon, "latitude": lat, "start": start, "end": end, "format": "JSON"}

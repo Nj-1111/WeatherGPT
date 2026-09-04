@@ -26,13 +26,19 @@ class RateLimiter:
         if last_day != day:
             last_day, day_count = day, 0
 
+        # The rolled window is written back on every path, refused or not. Returning early
+        # skipped the write, so a new day's counter only took effect on the next request
+        # that happened to be allowed.
+        retry_after: int | None = None
         if minute_count >= self._per_minute:
-            return int((minute + 1) * 60 - now) or 1
-        if day_count >= self._per_day:
-            return int((day + 1) * 86400 - now) or 1
+            retry_after = int((minute + 1) * 60 - now) or 1
+        elif day_count >= self._per_day:
+            retry_after = int((day + 1) * 86400 - now) or 1
+        else:
+            minute_count, day_count = minute_count + 1, day_count + 1
 
-        self._clients[client] = (last_minute, minute_count + 1, last_day, day_count + 1)
+        self._clients[client] = (last_minute, minute_count, last_day, day_count)
         self._clients.move_to_end(client)
         while len(self._clients) > self._max_clients:
             self._clients.popitem(last=False)
-        return None
+        return retry_after

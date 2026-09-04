@@ -57,6 +57,15 @@ DEFAULT_REGISTRY: dict[str, dict] = {
     "flood_warning": {"canonical": "flood_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
     "marine": {"canonical": "marine_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
     "marine_warning": {"canonical": "marine_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
+    # Declared in CanonicalVariable but previously absent here, so the gate rejected every
+    # record carrying them as an "unknown canonical variable" — silently discarding all of
+    # IMD's nowcast output, from the highest-authority source in the table.
+    "thunderstorm_probability": {"canonical": "thunderstorm_probability", "statistic": "probability", "unit": "%", "evidence_class": ["forecast", "nowcast"]},
+    "thunderstorm_category": {"canonical": "thunderstorm_probability", "statistic": "categorical", "unit": None, "evidence_class": ["forecast", "nowcast", "warning"]},
+    "wind_direction": {"canonical": "wind_direction", "statistic": "instant", "unit": "deg", "evidence_class": ["forecast", "observation", "reanalysis"]},
+    "wdir": {"canonical": "wind_direction", "statistic": "instant", "unit": "deg"},
+    # A summary row standing in for many ensemble members, not a measurement.
+    "rainfall_distribution": {"canonical": "rainfall_distribution", "statistic": "instant", "unit": "members", "evidence_class": ["forecast"]},
 }
 
 _BY_CANONICAL: dict[str, list[dict]] = defaultdict(list)
@@ -67,6 +76,11 @@ for _entry in DEFAULT_REGISTRY.values():
 def validate_semantics(variable: str, statistic: str, unit: str | None,
                        evidence_class: str, accumulation_hours: float | None) -> tuple[bool, str]:
     """Validate a CEO against canonical semantics rather than trusting a decoder or an LLM."""
+    if variable == "other":
+        # A deliberate escape hatch in CanonicalVariable. Accepted without a semantic
+        # guarantee, because silently discarding evidence a decoder declined to type is
+        # worse than admitting it unvalidated and letting the ranker weigh it.
+        return True, "unclassified variable accepted without semantic guarantee"
     entries = _BY_CANONICAL.get(variable)
     if not entries:
         return False, f"unknown canonical variable {variable}"
