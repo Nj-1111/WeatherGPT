@@ -236,6 +236,19 @@ def test_extract_place_phrase_recognizes_to_as_a_lead_preposition(question, plac
     assert extract_place_phrase(question) == place
 
 
+@pytest.mark.parametrize("question,place", [
+    ("what is the temperature in Nagpur right now", "Nagpur"),
+    ("whats the temperature in kolkata right now", "kolkata"),
+    ("weather in Mumbai right now", "Mumbai"),
+])
+def test_extract_place_phrase_strips_right_now_as_one_phrase(question, place):
+    """"right" precedes the trailing-time match word "now", so it wasn't stripped —
+    "Nagpur right now" resolved to place name "Nagpur right", which then geocoded wrong
+    or 404'd depending on luck."""
+    from app.services.location_resolver.normalize import extract_place_phrase
+    assert extract_place_phrase(question) == place
+
+
 @pytest.mark.parametrize("question,month,day", [
     ("rainfall in Rajkot on 2026-08-01", 8, 1),
     ("will it rain in Rajkot on 5 aug", 8, 5),

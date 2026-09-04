@@ -211,12 +211,11 @@ Marine, NDMA CAP feed) — this session verified against reality more than any p
 
 ### Next steps
 
-**Top open item: fix the Groq 404** (added this session, see above) — the model name in
-`.env`'s `SMALL_LLM_MODEL` is almost certainly stale/wrong for Groq's current catalogue.
-Diagnose with `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer
-$SMALL_LLM_KEY"` (never paste the key itself anywhere) and update `.env` with a real
-model id. Not urgent functionally — Gemini fallback works — but Groq isn't actually being
-exercised yet despite being configured.
+**Groq 404 fixed, same day.** `llama-3.3-70b-versatile` still exists in Groq's catalogue
+but is gated to Enterprise pricing — a plain API key 404s on it rather than a clearer
+403. Switched `SMALL_LLM_MODEL` to `openai/gpt-oss-120b` (standard pay-as-you-go tier).
+Live-verified: `fallback_used=False`, `attempts=1`, ~1.0-1.2s latency — noticeably faster
+than the Gemini fallback (2-6s) that had been silently absorbing every call until now.
 
 1. **`IMD_API_KEY`** — still blocked on you. Register at `api.imd.gov.in/public/login.php`
    (IP whitelisting; needs the EC2 elastic IP to exist — see `AWS.md`). CAP (NDMA's Sachet

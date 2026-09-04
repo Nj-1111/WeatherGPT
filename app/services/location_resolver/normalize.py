@@ -45,7 +45,7 @@ _LEAD_PATTERNS = [
 
 # Trailing RELATIVE time expressions that are not part of the place name.
 _TRAILING_TIME = re.compile(
-    r"\b(today|tonight|tomorrow|yesterday|now|currently|"
+    r"\b(right\s+now|today|tonight|tomorrow|yesterday|now|currently|"
     r"day\s+after\s+tomorrow|next\s+week|this\s+week|this\s+weekend|weekend|"
     r"next\s+\w+day|coming\s+\w+day|"
     r"(?:mon|tues|wednes|thurs|fri|satur|sun)day|"

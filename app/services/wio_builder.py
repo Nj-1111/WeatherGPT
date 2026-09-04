@@ -14,7 +14,7 @@ from app.schemas.wio import (
     WIOWeather,
 )
 from app.services.ranker import corroborated, detect_disagreements, rank
-from app.services.spatial_match import covers_query
+from app.services.spatial_match import area_names_query, covers_query
 from app.services.units import as_kmh
 
 _SEVERITY_ORDER = {"green": 0, "yellow": 1, "orange": 2, "red": 3}
@@ -173,11 +173,54 @@ def _marine_panel(scored) -> dict | None:
     return panel
 
 
-def _warning(ceos, q_lat: float, q_lon: float) -> WIOWarning:
-    # A warning whose polygon demonstrably excludes the query point is not this user's
-    # warning: the CAP feed is national.
+def _fallback_summary(weather: WIOWeather) -> str:
+    """weather.summary is written by _rain_panel alone — a temperature-only or wind-only
+    question (no rain keyword, so no precipitation evidence was even fetched) left it
+    empty, and every consumer (main.py's _synthesize, orchestrator.py's explanation fact
+    sheet) read that as "no evidence at all" even with a fully populated temperature/wind/
+    marine panel right next to it. Fixed once here so every consumer benefits."""
+    parts: list[str] = []
+    if weather.temperature:
+        t = weather.temperature
+        parts.append(f"Temperature ranging {t['min']}-{t['max']}{t['unit']}")
+    if weather.wind:
+        parts.append(f"wind up to {weather.wind['value_kmh']} km/h")
+    if weather.marine and "wave_height_m" in weather.marine:
+        parts.append(f"wave height up to {weather.marine['wave_height_m']} m")
+    return "; ".join(parts) + "." if parts else ""
+
+
+def _place_names(resolved_location: dict) -> tuple[list[str], list[str]]:
+    """(district/city names, state names) a warning's area text might use for this
+    location. Split because a state name alone is weaker evidence — see area_names_query."""
+    state = resolved_location.get("state")
+    local = [resolved_location.get("district"), resolved_location.get("normalized_name"),
+             resolved_location.get("raw")]
+    local.extend(name for name in (resolved_location.get("administrative_hierarchy") or [])
+                 if name != state)
+    return ([name for name in local if isinstance(name, str) and name.strip()],
+            [state] if isinstance(state, str) and state.strip() else [])
+
+
+def _covers(ev, q_lat: float, q_lon: float, place_names: tuple[list[str], list[str]]) -> bool:
+    """Whether an official warning applies to this user.
+
+    Polygon first when there is one. Otherwise fall back to the area description: the
+    feed is national, so an untestable warning used to be included by default, which
+    showed every alert in India to every user and (via official_warning.active) maxed
+    RADE's risk aversion for all of them. Defaulting the other way costs a
+    poorly-described local warning; defaulting as before cost every recommendation.
+    """
+    by_polygon = covers_query(ev, q_lat, q_lon)
+    if by_polygon is not None:
+        return by_polygon
+    return area_names_query(ev, *place_names)
+
+
+def _warning(ceos, q_lat: float, q_lon: float,
+             place_names: tuple[list[str], list[str]]) -> WIOWarning:
     warnings = [e for e in ceos
-                if e.evidence_class == "warning" and covers_query(e, q_lat, q_lon) is not False]
+                if e.evidence_class == "warning" and _covers(e, q_lat, q_lon, place_names)]
     if not warnings:
         return WIOWarning(active=False)
     worst = max(warnings, key=lambda e: _SEVERITY_ORDER.get((e.warning_severity or "yellow").lower(), 1))
@@ -229,6 +272,8 @@ def build_wio(query_text: str, resolved_location: dict, valid_from, valid_to, ho
     weather.temperature = _temperature_panel(scored)
     weather.wind = _wind_panel(scored)
     weather.marine = _marine_panel(scored)
+    if not weather.summary:
+        weather.summary = _fallback_summary(weather)
 
     disagreements = detect_disagreements(scored)
     if not ceos:
@@ -245,5 +290,6 @@ def build_wio(query_text: str, resolved_location: dict, valid_from, valid_to, ho
     query = WIOQuery(raw_text=query_text, resolved_location=resolved_location,
                      valid_from=valid_from, valid_to=valid_to, intent=horizon, lang=lang)
     return WeatherIntelligenceObject(
-        query=query, weather=weather, official_warning=_warning(ceos, q_lat, q_lon),
+        query=query, weather=weather,
+        official_warning=_warning(ceos, q_lat, q_lon, _place_names(resolved_location)),
         agreement=agreement, evidence=_evidence_summaries(scored), disagreements=disagreements)

@@ -54,11 +54,11 @@ evidence it cites, not that it cites the *right* evidence. An agent citing a rea
 irrelevant CEO and reporting its value honestly passes. Relevance is currently guaranteed by
 construction (claims are built from the fused panels), not by the reviewer.
 
-**Groq is now configured (2026-09-04) but 404s on every call** (`SMALL_LLM_MODEL` likely
-stale/wrong for Groq's current catalogue — not yet fixed, see `CLAUDE.md` Next steps);
-Gemini is the fallback that actually answers, proving the chain's resilience design
-works but not that Groq's own success path does. Diagnose via
-`curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $SMALL_LLM_KEY"`.
+**Groq is live and working (fixed 2026-09-04, same day it was added).** It 404'd on
+`llama-3.3-70b-versatile` (exists in Groq's catalogue but gated to Enterprise pricing —
+a plain key 404s rather than 403s on it); switched to `openai/gpt-oss-120b`
+(pay-as-you-go tier). Live-verified: `fallback_used=False`, ~1.0-1.2s latency, notably
+faster than the Gemini fallback that had been silently covering every call until now.
 
 ---
 

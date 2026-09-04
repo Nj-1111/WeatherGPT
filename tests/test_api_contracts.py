@@ -38,3 +38,26 @@ def test_wio_is_evidence_backed(monkeypatch):
     assert data["wio"]["evidence"]
     assert data["agents"][-2]["agent_name"] == "reviewer"
     assert data["agents"][-2]["status"] == "success"
+
+
+def _temperature_only_evidence():
+    now = datetime.now(timezone.utc)  # "right now" resolves to today's window, not tomorrow's
+    geometry = Geometry(type="Point", coordinates=[79.0882, 21.1458])
+    provenance = Provenance(original_source="fixture", transformations=["fixture test"])
+    return [CanonicalEvidenceObject(source="OPEN_METEO", evidence_class="forecast",
+                                    variable="temperature_2m", value=31.5, unit="C", statistic="instant",
+                                    geometry=geometry, valid_from=now, valid_to=now, provenance=provenance)]
+
+
+def test_temperature_only_answer_is_not_falsely_reported_as_no_evidence(monkeypatch):
+    """wio.weather.summary is only ever written by the rain panel — a question that never
+    fetches precipitation (no rain keyword) used to make _synthesize claim no evidence
+    existed at all, even with a fully populated temperature panel."""
+    async def fake_retrieve(*args, **kwargs):
+        return _temperature_only_evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
+    monkeypatch.setattr("app.main.retrieve", fake_retrieve)
+    response = asyncio.run(_post("/query", {"question": "what is the temperature in Nagpur right now"}))
+    assert response.status_code == 200, response.text
+    answer = response.json()["answer"]
+    assert "No compatible weather evidence" not in answer
+    assert "31.5" in answer

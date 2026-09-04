@@ -77,6 +77,22 @@ def test_marine_panel_is_none_without_marine_evidence():
     assert wio.weather.marine is None
 
 
+def test_summary_falls_back_to_temperature_when_no_rain_evidence_exists():
+    """weather.summary used to stay empty whenever no rain evidence was fetched (e.g. a
+    temperature-only question), which every consumer (the synthesized answer, the
+    explanation agent's fact sheet) read as "no evidence at all" despite a fully
+    populated temperature panel. Fixed once in build_wio so every consumer benefits."""
+    ceos = [_ceo("temperature_2m", value, hour, unit="C", statistic="instant")
+            for hour, value in enumerate([27.0, 31.2, 29.0])]
+    wio = build_wio("temperature right now", LOCATION, START, END, "short", ceos)
+    assert wio.weather.summary == "Temperature ranging 27.0-31.2C."
+
+
+def test_summary_stays_empty_with_no_evidence_at_all():
+    wio = build_wio("weather tomorrow", LOCATION, START, END, "short", [])
+    assert wio.weather.summary == ""
+
+
 def test_one_source_reporting_two_variables_is_not_agreement():
     ceos = [_ceo("precipitation_amount", 1.0, 0, window=1),
             _ceo("temperature_2m", 25.0, 0, unit="C", statistic="instant")]

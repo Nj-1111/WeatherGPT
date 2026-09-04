@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+from app.orchestrator.retrieval_planner import has_word
 from app.schemas.ceo import CanonicalEvidenceObject
 
 EARTH_RADIUS_KM = 6371.0
@@ -61,6 +62,47 @@ def covers_query(ev: CanonicalEvidenceObject, q_lat: float, q_lon: float) -> boo
     if geometry.type == "Polygon":
         return point_in_polygon(q_lat, q_lon, geometry.coordinates)
     return None
+
+
+# Shorter than this and a place name matches too much by coincidence. Real Indian states
+# and districts clear it ("Goa" is the shortest at 3).
+_MIN_PLACE_NAME_CHARS = 3
+
+
+def area_names_query(ev: CanonicalEvidenceObject, local_names: list[str],
+                     state_names: list[str]) -> bool:
+    """Whether a warning's free-text area description names the query location.
+
+    The polygon test above is authoritative but usually unavailable: every alert in
+    NDMA's national CAP feed (checked live, 31 of 31) ships with an area *description*
+    and no polygon at all. That description does carry the district and state
+    ("Brahmaputra, Dhubri, Dhubri, Assam"), so it can still answer "is this the user's
+    warning" — imprecisely, but far better than assuming every national alert is local.
+
+    A state name only implies coverage when the alert is actually state-wide. IMD
+    publishes district-scoped alerts as "<district>, <district> districts of <state>"
+    (verified live), where the state is naming where those districts are, not claiming
+    the whole state — so a listed-districts alert must name the user's own district.
+
+    Whole-word matching only: substring matching would match "Assam" inside a longer
+    unrelated token. Some publishers emit unusable text ("tslg"), which matches nothing
+    and is treated as not covering the user.
+    """
+    reference = (ev.geometry.reference if ev.geometry else None) or ""
+    areas = ev.extra.get("areas") if isinstance(ev.extra, dict) else None
+    haystack = " ".join([reference, *(areas if isinstance(areas, list) else [])]).casefold()
+    if not haystack.strip():
+        return False
+
+    def mentions(names: list[str]) -> bool:
+        return any(has_word(haystack, (name.casefold(),))
+                   for name in names if name and len(name) >= _MIN_PLACE_NAME_CHARS)
+
+    if mentions(local_names):
+        return True
+    if has_word(haystack, ("district", "districts")):
+        return False
+    return mentions(state_names)
 
 
 def distance_to_query(ev: CanonicalEvidenceObject, q_lat: float, q_lon: float) -> float:
