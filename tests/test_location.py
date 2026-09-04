@@ -243,3 +243,56 @@ def test_second_equivalent_request_hits_cache(stub_chain):
     asyncio.run(resolve_location("  PATNA  "))
     assert stub.calls == 1, "normalized-equivalent query should not re-hit the provider"
     assert location_cache.hits == 1
+
+
+# --- Geoapify provider -------------------------------------------------------
+
+def test_geoapify_is_tried_first_in_the_chain():
+    from app.services.location_resolver import _GEOCODERS
+    assert _GEOCODERS[0].name == "geoapify"
+
+
+def test_geoapify_returns_empty_without_api_key(monkeypatch):
+    import dataclasses
+
+    from app.config import settings
+    from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder
+    monkeypatch.setattr("app.services.location_resolver.providers.geoapify.settings",
+                        dataclasses.replace(settings, geoapify_api_key=""))
+    result = asyncio.run(GeoapifyGeocoder().search("Bangalore"))
+    assert result == []
+
+
+def test_geoapify_to_candidate_parses_full_result():
+    from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder
+    candidate = GeoapifyGeocoder()._to_candidate({
+        "lat": 12.9716, "lon": 77.5946, "city": "Bengaluru", "country": "India",
+        "country_code": "in", "state": "Karnataka", "county": "Bengaluru Urban",
+        "postcode": "560001", "result_type": "city",
+        "timezone": {"name": "Asia/Kolkata"},
+    })
+    assert candidate is not None
+    assert candidate.name == "Bengaluru"
+    assert (candidate.lat, candidate.lon) == (12.9716, 77.5946)
+    assert candidate.country_code == "IN"
+    assert candidate.admin1 == "Karnataka"
+    assert candidate.admin2 == "Bengaluru Urban"
+    assert candidate.feature_code == "PPLA"
+    assert candidate.timezone == "Asia/Kolkata"
+    assert candidate.provider == "geoapify"
+
+
+def test_geoapify_to_candidate_falls_back_to_formatted_name():
+    from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder
+    candidate = GeoapifyGeocoder()._to_candidate({
+        "lat": 12.9716, "lon": 77.5946, "formatted": "Bengaluru, Karnataka, India",
+    })
+    assert candidate is not None
+    assert candidate.name == "Bengaluru"
+    assert candidate.feature_code == "PPL"  # no result_type -> not a recognized capital type
+
+
+@pytest.mark.parametrize("item", [{"lat": 12.9}, {"lat": "x", "lon": "y", "city": "A"}, "not-a-dict", None])
+def test_geoapify_to_candidate_skips_malformed(item):
+    from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder
+    assert GeoapifyGeocoder()._to_candidate(item) is None

@@ -18,6 +18,7 @@ from app.schemas.location import ResolvedLocation
 from app.services.location_resolver import detect, normalize, ranking, seed
 from app.services.location_resolver.cache import location_cache
 from app.services.location_resolver.providers.base import LocationCandidate
+from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder
 from app.services.location_resolver.providers.india_post import IndiaPostProvider
 from app.services.location_resolver.providers.nominatim import NominatimGeocoder
 from app.services.location_resolver.providers.open_meteo import OpenMeteoGeocoder
@@ -40,10 +41,11 @@ class LocationAmbiguousError(Exception):
         super().__init__(f"{message}: {raw} -> {candidates}")
 
 
-# Ordered fallback chain. Open-Meteo first (keyless, structured, same vendor as the
-# weather adapters); Nominatim second because it covers Indian districts, states and
-# historical aliases that Open-Meteo's populated-places dataset lacks.
-_GEOCODERS = (OpenMeteoGeocoder(), NominatimGeocoder())
+# Ordered fallback chain. Geoapify first when GEOAPIFY_API_KEY is set (see that
+# provider's own docstring for its unconfigured no-op behavior); Open-Meteo next
+# (keyless, structured, same vendor as the weather adapters); Nominatim last because it
+# covers Indian districts, states and historical aliases the other two miss.
+_GEOCODERS = (GeoapifyGeocoder(), OpenMeteoGeocoder(), NominatimGeocoder())
 _PINCODE_PROVIDER = IndiaPostProvider()
 
 
