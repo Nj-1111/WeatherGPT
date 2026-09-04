@@ -83,6 +83,9 @@ class Settings:
     location_cache_max_entries: int = int(os.getenv("WEATHERGPT_LOCATION_CACHE_MAX_ENTRIES", "4096"))
     evidence_store_max_entries: int = int(os.getenv("WEATHERGPT_EVIDENCE_STORE_MAX_ENTRIES", "20000"))
     evidence_store_ttl_seconds: int = int(os.getenv("WEATHERGPT_EVIDENCE_STORE_TTL_SECONDS", "3600"))
+    # /health is exempt from auth and rate limiting (infra must be able to probe it), so a
+    # short cache is what actually stops repeat calls from re-triggering all 8 adapters.
+    health_cache_ttl_seconds: int = int(os.getenv("WEATHERGPT_HEALTH_CACHE_TTL_SECONDS", "30"))
 
     # Ranking weights — must sum to 1.0
     rank_weight_authority: float = float(os.getenv("WEATHERGPT_RANK_WEIGHT_AUTHORITY", "0.35"))

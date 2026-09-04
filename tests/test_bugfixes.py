@@ -9,6 +9,7 @@ import pytest
 from app.adapters.registry import REGISTRY, health_all
 from app.main import app
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
+from app.services.cache import TTLCache
 from app.services.rate_limit import RateLimiter
 from app.services.time_parser import parse_time_window
 from app.services.units import as_kmh
@@ -58,13 +59,21 @@ def test_a3_the_gate_still_rejects_a_genuinely_unknown_variable():
     assert not ok and "unknown canonical variable" in reason
 
 
-def test_b1_health_probes_every_adapter_concurrently():
+def _fresh_health_cache(monkeypatch):
+    """health_all() now caches its result; each test that wants a real probe needs its
+    own empty cache instead of possibly reusing another test's cached outcome."""
+    monkeypatch.setattr("app.adapters.registry._health_cache", TTLCache(max_entries=1))
+
+
+def test_b1_health_probes_every_adapter_concurrently(monkeypatch):
+    _fresh_health_cache(monkeypatch)
     result = asyncio.run(health_all())
     assert set(result) == set(REGISTRY)
 
 
 def test_b1_one_raising_adapter_cannot_break_the_others(monkeypatch):
     """gather(return_exceptions=True) must isolate exactly as the old loop did."""
+    _fresh_health_cache(monkeypatch)
     class Exploding:
         async def health_check(self):
             raise RuntimeError("boom")
@@ -72,6 +81,22 @@ def test_b1_one_raising_adapter_cannot_break_the_others(monkeypatch):
     result = asyncio.run(health_all())
     assert result["OPEN_METEO"] == {"available": False, "reason": "boom"}
     assert len(result) == len(REGISTRY)
+
+
+def test_health_result_is_cached_within_ttl(monkeypatch):
+    """§2.9: repeat /health calls must not re-trigger the 8-way upstream fan-out."""
+    _fresh_health_cache(monkeypatch)
+    calls = 0
+
+    class Counting:
+        async def health_check(self):
+            nonlocal calls
+            calls += 1
+            return {"available": True}
+    monkeypatch.setitem(REGISTRY, "OPEN_METEO", Counting())
+    asyncio.run(health_all())
+    asyncio.run(health_all())
+    assert calls == 1
 
 
 def test_b2_grib2_adapter_uses_the_shared_pool():
