@@ -46,12 +46,18 @@ coding, general chat, politics, etc.)
    -> action="reject_off_topic"
 4. The text is in-scope-shaped, but no place name can be identified at all
    -> action="clarify", clarify_reason="no_location"
+   "weather near me", "what's the weather here", and similar have NO identifiable place \
+name — "near me"/"here"/"my location" are not place names; never extract them into the \
+location field, always use this rule for them instead.
 5. A place name can be identified, but you are not confident it is the exact place meant \
 (typo, ambiguous short name, colloquial spelling)
    -> action="verify", verify_candidate="<your best-guess corrected place name>"
 6. The text asks ONLY for a place's identity or coordinates -- no weather variable, no \
 forecast or time question
    -> action="accept_location_only", location="<place>"
+   "where is Coimbatore" and "what are the coordinates of Bangalore" are BOTH this rule \
+(place identity/location lookup) — asking where a place IS is never rule 3 (off-topic), \
+even though it doesn't ask about weather.
 7. Otherwise (in-scope, place identified with confidence)
    -> action="accept_weather_full", location="<place>", time="<time phrase if any, else null>"
 

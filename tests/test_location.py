@@ -99,6 +99,31 @@ def test_india_is_preferred_over_larger_foreign_match(stub_chain):
     assert loc.state == "Bihar"
 
 
+def test_india_wins_hard_tier_even_when_foreign_population_dwarfs_it(stub_chain):
+    """The hard tier, not a soft bonus: a +2.0 additive bonus can be outweighed by a big
+    enough foreign population gap (log10(10_000_000)=7.0 vs log10(90_000)+2=6.95 — the
+    foreign candidate used to win by 0.05). The tier makes this impossible regardless of
+    the population gap — the exact shape of the live "Kochi" -> Japan failure this closes.
+    """
+    stub_chain(_StubGeocoder([
+        _candidate("Kochi", 33.5597, 133.5311, "JP", population=10_000_000),
+        _candidate("Kochi", 9.9312, 76.2673, "IN", population=90_000, admin1="Kerala"),
+    ]))
+    loc = asyncio.run(resolve_location("Kochi"))
+    assert loc.state == "Kerala"
+
+
+def test_single_implausible_candidate_is_not_auto_dominant(stub_chain):
+    """A lone candidate with no population and no exact-name match (the shape of a fuzzy
+    free-text match on a typo or nonsense query) must not be silently confident — it
+    should read as ambiguous rather than a guessed answer."""
+    stub_chain(_StubGeocoder([
+        _candidate("Some Unrelated Village", 4.5, 11.5, "CM", population=None),
+    ]))
+    with pytest.raises(LocationAmbiguousError):
+        asyncio.run(resolve_location("Zzqxplace"))
+
+
 def test_global_location_still_resolves(stub_chain):
     stub_chain(_StubGeocoder([
         _candidate("London", 51.50853, -0.12574, "GB", population=8961989,
@@ -138,6 +163,38 @@ def test_historical_alias_is_normalized(stub_chain):
     stub_chain(stub)
     loc = asyncio.run(resolve_location("Bombay"))
     assert loc.state == "Maharashtra"
+
+
+@pytest.mark.parametrize("typo, canonical", [
+    ("bnglr", "Bengaluru"), ("blr", "Bengaluru"), ("mum", "Mumbai"),
+    ("chenai", "Chennai"), ("hyd", "Hyderabad"), ("del", "Delhi"),
+    ("dilli", "Delhi"), ("cbe", "Coimbatore"), ("vizag", "Visakhapatnam"),
+])
+def test_expanded_india_aliases_normalize_to_canonical_name(typo, canonical):
+    """chenai -> Chennai is the exact live-verified typo that used to resolve to France."""
+    from app.services.location_resolver.normalize import normalize_query
+    assert normalize_query(typo) == canonical
+
+
+@pytest.mark.parametrize("question", [
+    "weather near me", "what's the weather here", "my location weather",
+    "current weather at my location",
+])
+def test_extract_place_phrase_rejects_self_referential_phrases(question):
+    """"near me"/"here" are not place names — a free-text geocoder used to fuzzy-match
+    "near me" to an unrelated foreign village (verified live: Cameroon)."""
+    from app.services.location_resolver.normalize import extract_place_phrase
+    assert extract_place_phrase(question) is None
+
+
+def test_resolve_location_rejects_near_me_before_hitting_a_geocoder(stub_chain):
+    """Backstop for when a caller (the guardrail's LLM extraction) hands 'near me'
+    straight to the resolver, bypassing extract_place_phrase entirely."""
+    stub = _StubGeocoder([_candidate("Some Unrelated Village", 4.5, 11.5, "CM")])
+    stub_chain(stub)
+    with pytest.raises(LocationNotFoundError):
+        asyncio.run(resolve_location("near me"))
+    assert stub.calls == 0
 
 
 # --- ambiguity -------------------------------------------------------------

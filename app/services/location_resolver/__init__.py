@@ -52,6 +52,11 @@ _PINCODE_PROVIDER = IndiaPostProvider()
 async def resolve_location(raw: str) -> ResolvedLocation:
     if not raw or not raw.strip():
         raise LocationNotFoundError(raw, "Location required but empty")
+    if normalize.is_self_referential(raw):
+        # A backstop for when a caller (e.g. the guardrail's LLM extraction) hands this
+        # straight to the resolver without going through extract_place_phrase first — a
+        # free-text geocoder would otherwise fuzzy-match "near me" to some unrelated place.
+        raise LocationNotFoundError(raw, "No specific place was named")
 
     started = time.monotonic()
 
@@ -157,7 +162,8 @@ async def _resolve_place(raw: str) -> ResolvedLocation:
                 continue
             winner, dominant, ranked = ranking.select(candidates, query, settings.geocoding_dominance_margin)
             if winner is not None and dominant:
-                gap = ranked[0][0] - ranked[1][0] if len(ranked) > 1 else settings.geocoding_dominance_margin * 3
+                same_tier = len(ranked) > 1 and ranking.is_india_candidate(ranked[0][1]) == ranking.is_india_candidate(ranked[1][1])
+                gap = ranked[0][0] - ranked[1][0] if same_tier else settings.geocoding_dominance_margin * 3
                 return _from_candidate(raw, query, winner,
                                        ranking.confidence_for(gap, settings.geocoding_dominance_margin))
             if ranked and not ambiguous:

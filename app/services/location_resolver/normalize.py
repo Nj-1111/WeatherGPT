@@ -29,6 +29,17 @@ ALIASES = {
     "simla": "Shimla",
     "benares": "Varanasi",
     "banaras": "Varanasi",
+    # Abbreviations and common typos of major Indian cities. "chenai" is the exact
+    # live-verified typo that used to resolve to a French village.
+    "bnglr": "Bengaluru",
+    "blr": "Bengaluru",
+    "mum": "Mumbai",
+    "chenai": "Chennai",
+    "hyd": "Hyderabad",
+    "del": "Delhi",
+    "dilli": "Delhi",
+    "cbe": "Coimbatore",
+    "vizag": "Visakhapatnam",
 }
 
 # Phrases that precede a place name in a weather question.
@@ -109,11 +120,25 @@ def cache_key(text: str) -> str:
     return _WHITESPACE.sub(" ", (text or "").strip().casefold())
 
 
+# Phrases that mean "wherever I am," not a real place name. A free-text geocoder has no way
+# to know these aren't places — a fuzzy match can still land on some unrelated foreign
+# village (verified live: "near me" -> Mme-Bafumen, Cameroon).
+_SELF_REFERENTIAL_PHRASES = {
+    "me", "near me", "my location", "my current location", "current location",
+    "here", "my area", "my city", "nearby",
+}
+
+
+def is_self_referential(phrase: str) -> bool:
+    return (phrase or "").strip().casefold() in _SELF_REFERENTIAL_PHRASES
+
+
 def extract_place_phrase(text: str) -> str | None:
     """Pull a probable place name out of a full question, deterministically.
 
     "will it rain in Indore tomorrow" -> "Indore"
     "will it rain tomorrow"           -> None
+    "weather near me"                 -> None (self-referential, not a place)
     """
     if not text:
         return None
@@ -127,6 +152,6 @@ def extract_place_phrase(text: str) -> str | None:
             tail = stripper.sub("", tail)
         tail = _PUNCT_EDGES.sub("", _WHITESPACE.sub(" ", tail).strip())
         # Place names are short; a long tail means the regex caught a sentence, not a place.
-        if tail and len(tail.split()) <= 5:
+        if tail and len(tail.split()) <= 5 and not is_self_referential(tail):
             return tail
     return None
