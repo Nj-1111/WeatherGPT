@@ -21,6 +21,13 @@ _SCHEMA = (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, decision TEXT,
         forecast TEXT, actual TEXT, feedback TEXT, timestamp TEXT
     )""",
+    # Backs storage.SqliteConversationLog. Payload is opaque JSON so a turn's shape can
+    # change without a migration here.
+    """CREATE TABLE IF NOT EXISTS conversation_turns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, payload TEXT, created_at TEXT
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_conversation_turns_session
+       ON conversation_turns (session_id, id)""",
 )
 
 _initialized = False
