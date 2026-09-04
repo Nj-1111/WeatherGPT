@@ -14,3 +14,7 @@ wandb/
 lightning_logs/
 graphify-out/
 *.db
+
+# Repo snapshots do not belong inside the repo
+weathergpt-*.tar.gz
+weathergpt-*.zip
