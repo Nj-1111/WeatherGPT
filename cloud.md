@@ -7,6 +7,14 @@ and `docs/SERVICES.md` explains how each service works.
 Verified at time of writing: `pytest -q` 120 passed · `ruff check` clean · `mypy app`
 clean · 6 of 8 sources live.
 
+**Updated 2026-09-04 — see `CLAUDE.md`'s "Session record — 2026-09-04" for the full
+account.** §2.9 closed (`/health` now cached). Two new sources added
+(`OPEN_METEO_MARINE`, live; `STORMGLASS`, keyed and not yet verified) — 7 of 10 sources
+now live. `query_extractor.py` deleted, replaced by `app/services/query_guardrail.py`
+(real dispatch, not a dead intent field). Geoapify added as primary geocoder.
+`CAP_FEED_URL` now points at NDMA's Sachet feed (broader than IMD-only). §2.1's fix
+(`WEATHERGPT_API_KEYS`) is missing from this file's §5 checklist below — added.
+
 ---
 
 ## 1. Blocked on credentials
@@ -14,11 +22,13 @@ clean · 6 of 8 sources live.
 | Source | Missing | Effect | Action |
 |---|---|---|---|
 | **IMD** (authority 0.95) | `IMD_API_KEY`, `IMD_API_BASE` | India's own met authority absent from the pipeline. The 5 decoder variants in `imd_json.py` have never run against real data. | Register at `api.imd.gov.in/public/login.php`. Uses IP whitelisting, so the EC2 elastic IP must exist first. |
-| **GFS/GRIB2** | `cfgrib`/`eccodes`/`xarray` | Adapter self-reports unavailable. | `requirements-full.txt`; eccodes needs system libraries, so use the Docker path. |
+| **GFS/GRIB2** | `cfgrib`/`eccodes`/`xarray` | Adapter self-reports unavailable. | `requirements-full.txt`; eccodes needs system libraries, so use the Docker path. The Docker image built 2026-09-04 (`AWS.md`) still only installs `requirements-api.txt` — not yet done. |
+| **STORMGLASS** (marine fallback) | `STORMGLASS_API_KEY` | Fallback marine source unavailable; primary (`OPEN_METEO_MARINE`, keyless) still works. Built to StormGlass's documented shape but never actually exercised against a real response. | Needs a paid signup key. |
 
-CAP (authority 1.0) is now live and keyless, and carries IMD's official warnings, so the
-IMD API is no longer the only route to Indian warnings — it adds forecasts, observations
-and rainfall on top.
+CAP (authority 1.0) is now live and keyless — as of 2026-09-04 pointed at NDMA's Sachet
+feed (`sachet.ndma.gov.in`, India's multi-hazard alert aggregator) rather than the old
+IMD-only feed, and carries official warnings, so the IMD API is no longer the only route
+to Indian warnings — it adds forecasts, observations and rainfall on top.
 
 ---
 
@@ -33,19 +43,22 @@ LLM prose is checked separately: every quantity carrying a unit must match somet
 deterministic pipeline produced. Failure is split — a contradicted value or unknown ID is a
 503; an unrecognised claim shape is a warning.
 
-The LLM seam is wired, off by default: `run_explanation_agent` calls Groq only when
-`WEATHERGPT_LLM_ENABLED=true` **and** `GROQ_API_KEY` is set, writes prose only, and degrades
-to the deterministic template answer on any failure.
+The LLM seam is wired, off by default: `run_explanation_agent` calls the small LLM tier
+only when `LLM_ENABLED=true` **and** `SMALL_LLM_MODEL`/`_BASE_URL`/`_KEY` are set in
+`.env`, writes prose only, and degrades to the deterministic template answer on any
+failure. (Provider-agnostic since 2026-09 — was Groq-specific `groq_client.py`, now
+`app/llm/client.py`.)
 
 **What this gate still cannot do** — it confirms a claim is arithmetically faithful to the
 evidence it cites, not that it cites the *right* evidence. An agent citing a real but
 irrelevant CEO and reporting its value honestly passes. Relevance is currently guaranteed by
 construction (claims are built from the fused panels), not by the reviewer.
 
-**Not yet verified against a real Groq response.** No valid `GROQ_API_KEY` was available, so
-the success path is covered only by tests with a stubbed client. The failure path was
-verified live against api.groq.com with an invalid key: 401 → explanation `partial`, request
-still 200 on the template answer.
+**Groq is now configured (2026-09-04) but 404s on every call** (`SMALL_LLM_MODEL` likely
+stale/wrong for Groq's current catalogue — not yet fixed, see `CLAUDE.md` Next steps);
+Gemini is the fallback that actually answers, proving the chain's resilience design
+works but not that Groq's own success path does. Diagnose via
+`curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $SMALL_LLM_KEY"`.
 
 ---
 
@@ -82,16 +95,22 @@ still 200 on the template answer.
 
 ## 5. Deployment checklist
 
+- **`WEATHERGPT_API_KEYS` must be set** (added 2026-09-04, closes §2.1's IDOR) — empty
+  means the auth gate is off, fine for local dev, not for anything internet-reachable.
+  See `AWS.md` §7 for generating and distributing one.
 - `WEATHERGPT_CORS_ORIGINS` must be set to the web app's origin, or CORS middleware is
   never installed.
-- Outbound HTTPS to 8 external hosts must be allowed by the security group.
+- Outbound HTTPS to 10 external hosts must be allowed by the security group (8 weather/
+  geocoding sources plus whichever LLM endpoints are configured).
 - `WEATHERGPT_MET_NORWAY_USER_AGENT` must identify the deployment; api.met.no returns 403
   to generic User-Agents.
 - Set `WEATHERGPT_LOG_JSON=true` for machine-readable logs.
 - Run **one** uvicorn worker until the caches move to Redis.
-- The LLM explanation is off unless `WEATHERGPT_LLM_ENABLED=true` **and** `GROQ_API_KEY` is
-  set. Leaving it off is a supported configuration: the answer is then entirely template-built.
-- Outbound HTTPS to `api.groq.com` is needed only when the LLM is enabled.
+- The LLM explanation is off unless `LLM_ENABLED=true` **and** the small tier
+  (`SMALL_LLM_MODEL`/`_BASE_URL`/`_KEY`) is configured. Leaving it off is a supported
+  configuration: the answer is then entirely template-built.
+- Outbound HTTPS to whichever LLM host(s) are configured (Gemini/Groq/etc.) is needed
+  only when the LLM is enabled — see `AWS.md` for the full deploy path.
 
 ---
 

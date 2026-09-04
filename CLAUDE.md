@@ -145,53 +145,122 @@ evidence it cites, not that it cites the *right* evidence. An agent citing a rea
 irrelevant CEO and reporting its value honestly still passes. Relevance is guaranteed by
 construction (claims are built from the fused panels), not by the reviewer.
 
+## Session record — 2026-09-04, intelligent guardrail/dispatch + marine data + deploy
+
+Closed §2.9 (`/health` unauthenticated 8-way fan-out — now cached, `WEATHERGPT_HEALTH_CACHE_TTL_SECONDS`,
+default 30s, in `app/adapters/registry.py`). Then a spec-driven initiative
+(`CAPABILITY_MAP.md`, per-module `SPEC-*.md` files, `tasks/`) replaced the dead
+`is_weather_related` boolean with a real dispatch key.
+
+**The guardrail is now a decision, not a flag.** `app/services/query_guardrail.py`
+replaces `query_extractor.py` (deleted, along with `NormalizedQuery`/`QueryIntent`, which
+extracted an intent nothing ever branched on). One LLM call classifies every query into
+`GuardrailAction`: `ACCEPT_LOCATION_ONLY` (skips retrieval/fusion/agents/RADE entirely —
+"what are the coordinates of X" now answers in ~1s instead of running the full pipeline),
+`ACCEPT_WEATHER_FULL` (unchanged), `REJECT_OFF_TOPIC`, `CLARIFY`, `VERIFY` (asks "did you
+mean X?", confirmed via `session_router.py`'s new pending-verification store), and
+`UNSUPPORTED_TOPIC` (a disaster type with no data source — earthquake, tsunami, wildfire,
+landslide, volcanic, drought — answered honestly instead of rejected as off-topic or
+fabricated with irrelevant weather data). The LLM applies a fixed decision-tree prompt,
+never its own judgment; every non-accept action's message is a fixed Python template,
+never LLM prose. Deterministic fallback (LLM down) covers every action except
+CLARIFY(garbled)/VERIFY, which genuinely need language understanding.
+
+**Scope actually widened, not just gated differently.** Marine/fishing, mountain/trek,
+weather-driven disaster (cyclone/flood/storm/heat — already backed by CAP, just blocked
+by the old narrow topic list), and route/travel planning are now accepted
+(`guardrail.py`'s `TOPIC_WORDS`, the guardrail's system prompt). Found and fixed along the
+way: `extract_place_phrase` had no lead pattern for "to" — "cyclone coming **to** Chennai"
+passed the widened guardrail but then 422'd, since the location was never extracted.
+
+**Marine data — genuinely new, not just unlocked.** `app/adapters/open_meteo_marine.py`
+(primary, keyless) — verified live against the real API before writing it, which caught
+that `ocean_current_velocity` is natively km/h, not m/s as first planned.
+`app/adapters/stormglass_adapter.py` (fallback, keyed, `STORMGLASS_API_KEY`) — built to
+its documented shape but **not** live-verified (needs a paid key). Six new
+`CanonicalVariable`s, a `WIOWeather.marine` panel, `retrieval_planner.py` wiring. Proves
+`adapter-extensibility` for real: both registered in `app/adapters/registry.py` with zero
+other pipeline changes.
+
+**Geoapify added as primary geocoder** (`app/services/location_resolver/providers/
+geoapify.py`), existing Open-Meteo→Nominatim→India Post chain kept as fallback —
+live-verified (correct fields, and ambiguity detection still works against its result
+shape unmodified).
+
+**`CAP_FEED_URL` switched to NDMA's Sachet feed** (`sachet.ndma.gov.in`, India's
+multi-hazard alert aggregator, broader than the old IMD-only feed) — surfaced a real bug:
+`cap_adapter.py`'s `_alert_links` filtered on `.xml`-suffixed links (IMD's shape); NDMA's
+links are `FetchXMLFile?identifier=...` and were silently all dropped, which would have
+made the new feed return zero warnings with no error. Fixed to accept any `http(s)` link,
+live-verified (25 alert documents, 36 CEOs decoded correctly).
+
+**Groq added as the small LLM tier** (`SMALL_LLM_MODEL=llama-3.3-70b-versatile`,
+`SMALL_LLM_BASE_URL=https://api.groq.com/openai/v1`) — **currently 404s on every call**,
+falling back to Gemini (which still works, proving the chain's resilience design). Model
+name is the suspect; not yet fixed. See Next steps.
+
+`TUNING_GUIDE.md` (which file to edit for a given customization), `AWS.md` (EC2 deploy —
+Docker + a `weathergpt.service` systemd unit so it survives reboot), `coding_rules.md`
+(general code-quality rules the user asked to be followed strictly going forward, on top
+of the conventions already described in this file) added this session.
+
+**Verified:** `pytest -q` 256+ passed (1 pre-existing unrelated failure — small LLM tier
+unconfigured *in the test environment specifically*, not a real bug); `ruff`/`mypy` clean
+throughout. Several live smoke tests against real external APIs (Geoapify, Open-Meteo
+Marine, NDMA CAP feed) — this session verified against reality more than any prior one.
+
 ### Next steps
 
-**`docs/security-audit-2026-09-03.md` §2.1 is closed.** `user_id`/`session_id` used to be
-unauthenticated free strings — any client could read or overwrite another user's stored
-context facts or hijack their follow-up session. WeatherGPT is called server-to-server by
-one other team's backend, never by end users directly, so the fix is a static API key
-(`WEATHERGPT_API_KEYS`, `Authorization: Bearer <key>`, checked in `RequestIDMiddleware` —
-`app/services/auth.py`), not a login/JWT/accounts subsystem. Every stored
-`user_id`/`session_id` is additionally namespaced under a hash of the calling key
-(`_scoped_id` in `app/main.py`), so the IDOR is closed at the storage layer too, not just
-the front door: even a sloppy or reused `user_id` on the caller's side can't cross into
-another key's data. The gate is off when `WEATHERGPT_API_KEYS` is unset (dev/test
-default) — must be set before this runs anywhere reachable by anyone but that one caller.
+**Top open item: fix the Groq 404** (added this session, see above) — the model name in
+`.env`'s `SMALL_LLM_MODEL` is almost certainly stale/wrong for Groq's current catalogue.
+Diagnose with `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer
+$SMALL_LLM_KEY"` (never paste the key itself anywhere) and update `.env` with a real
+model id. Not urgent functionally — Gemini fallback works — but Groq isn't actually being
+exercised yet despite being configured.
 
-External DB/cache (Postgres/Redis) remains planned future scope for this microservice;
-the interfaces already exist in `app/storage/` but are not yet wired to an external
-provider — it stays on in-process memory + local SQLite for now.
-
-The small LLM tier is now live: `SMALL_LLM_MODEL=gemini-3.1-flash-lite` via Gemini's
-OpenAI-compatible endpoint (config-only, no code change). `gemini-1.5-flash` and
-`gemini-2.5-flash` are both retired as of 2026-09; `gemini-3.6-flash` exists but returned
-503 "high demand" on every attempt when this was checked — swap the model name in `.env`
-freely if its capacity recovers.
-
-1. **`IMD_API_KEY`** — the only blocked item needing you. Register at
-   `api.imd.gov.in/public/login.php` (IP whitelisting; needs the EC2 elastic IP to exist).
-   Set `IMD_API_KEY` and `IMD_API_BASE`.
-2. **Run the LLM path against a real `GROQ_API_KEY`** — the success path is untested outside
-   stubs, and the model list in `orchestrator/models.py` has never been checked against Groq's
-   live catalogue.
-3. **`app/services/model_client.py`** still does not exist — see `model.md` for the
+1. **`IMD_API_KEY`** — still blocked on you. Register at `api.imd.gov.in/public/login.php`
+   (IP whitelisting; needs the EC2 elastic IP to exist — see `AWS.md`). CAP (NDMA's Sachet
+   feed, live and keyless) already covers official warnings including cyclone/flood/storm/
+   heat, so this is no longer the only route to Indian warnings, just the richer one
+   (forecasts, observations, rainfall on top).
+2. **`app/services/model_client.py`** still does not exist — see `model.md` for the
    contract. Call it between the semantic gate and `build_wio` in `main.py`.
-4. Rate limiting keys on `request.client.host`. Behind a proxy every caller shares one
+3. **`STORMGLASS_API_KEY`** — the fallback marine adapter is built but not live-verified
+   (needs a paid signup key, unlike Open-Meteo Marine's keyless primary). If you get one,
+   smoke-test it the same way Geoapify/Open-Meteo Marine were verified this session.
+4. **`big_llm()`** (`app/llm/client.py`) is fully wired (config, chain, fallback) but
+   **nothing calls it** — the "deterministic complexity trigger" that was supposed to wake
+   it was never built. Either build that trigger or stop carrying `BIG_LLM_*` config as if
+   it does something.
+5. Security audit items **beyond §2.1/§2.9 remain open** — §2.2 (query-extractor prompt
+   injection, assessed low actual impact), §2.3 (Nominatim's per-process throttle is a
+   shared cross-tenant bottleneck), §2.5 (prose-grounding regex only catches 4 unit
+   spellings), §2.6 (request-size cap is bypassable without `Content-Length`), §2.7 (no
+   per-user cap on stored fact count/size), §2.8 (synchronous SQLite calls block the event
+   loop), §2.10 (CAP adapter has no host-allowlist/XXE-hardening for feed-supplied URLs),
+   §2.11 (raw exception text leaks into `retrieval_status`). None fixed this session —
+   full detail in `docs/security-audit-2026-09-03.md`'s punch list.
+6. Rate limiting keys on `request.client.host`. Behind a proxy every caller shares one
    bucket; `X-Forwarded-For` is deliberately not trusted because it is spoofable.
-5. `GFS` needs `requirements-full.txt` (eccodes needs system libraries — use Docker).
+7. `GFS` needs `requirements-full.txt` (eccodes needs system libraries) — the Docker image
+   built this session (`AWS.md`) still only installs `requirements-api.txt`; GFS stays
+   unavailable in the container too until that's added.
+8. `rag-app-info` and broader (non-weather-driven) disaster types remain deliberately
+   deferred — see `CAPABILITY_MAP.md`.
 
 ### Resume next session
 
 ```bash
 cd ~/weathergpt && source .venv/bin/activate
 pip install -r requirements-api.txt
-pytest -q                                    # expect 120 passed
+pytest -q                                    # expect 256+ passed, 1 pre-existing unrelated failure
 ruff check app tests && mypy app             # both clean
-uvicorn app.main:app --host 0.0.0.0 --port 8001
+set -a && source .env && set +a && uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
-Read `docs/SERVICES.md` first, then `cloud.md` for what remains.
+Read `docs/SERVICES.md` first, then `cloud.md` for what remains, `CAPABILITY_MAP.md` for
+this session's module-by-module build record, and `TUNING_GUIDE.md` for "which file do I
+edit to change X."
 
 ## Commands
 
@@ -212,7 +281,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 **Tests:**
 ```bash
-pytest -q                                # full suite (120 tests as of last verified run)
+pytest -q                                # full suite (256+ tests as of last verified run)
 pytest tests/test_ceo.py::test_comparable_gate   # single test
 ```
 `testpaths=["tests"]` and `pythonpath=["."]` are set in `pyproject.toml`, so `pytest` runs correctly from repo root without extra flags.
@@ -229,6 +298,9 @@ mypy app             # ignore_missing_imports = true
 ```bash
 docker compose up --build   # python:3.10-slim, exposes :8001
 ```
+Only `requirements-api.txt` is installed in the image — GFS/GRIB2 stays unavailable
+inside the container too (see Next steps). `AWS.md` has the full EC2 deploy path
+(Docker + a `weathergpt.service` systemd unit so it survives reboot).
 
 ## Architecture
 
@@ -237,6 +309,11 @@ WeatherGPT is an evidence-grounded weather intelligence backend, not a "call an 
 ### Request flow (`POST /query`, `app/main.py:_weather_request`)
 
 ```
+query_guardrail.run_guardrail  (one LLM call → GuardrailAction; fixed decision-tree prompt,
+                                 never the LLM's own judgment — see Session record 2026-09-04)
+  ├─ REJECT_OFF_TOPIC / CLARIFY / VERIFY / UNSUPPORTED_TOPIC → fixed template message, return now
+  ├─ ACCEPT_LOCATION_ONLY → location_resolver only → return now (no retrieval/fusion/agents/RADE)
+  └─ ACCEPT_WEATHER_FULL ↓
 location_resolver → time_parser → retrieval_planner (deterministic — LLM never picks sources)
   → retrieval.py (concurrent per-source fetch+cache, isolated failures)
     → adapters/*.py .fetch() → decoders/*.py → CanonicalEvidenceObject (CEO)
@@ -251,7 +328,7 @@ location_resolver → time_parser → retrieval_planner (deterministic — LLM n
 
 **WIO (`app/schemas/wio.py`)** — the single fused object everything downstream reads from. `weather.rain`/`wind`/`temperature` hold the highest-ranked value per variable (ranked by `0.4·source_authority + 0.25·freshness + 0.20·spatial_proximity + 0.15·quality`, table in `app/services/ranker.py:AUTHORITY`), but `evidence[]` still lists every surviving CEO for audit, and `agreement.status`/`disagreements[]` surface any conflict explicitly. Official warnings are structurally separate from numeric fusion — never blended in.
 
-**Agents (`app/agents/orchestrator.py`)** — seven deterministic Python functions that each derive a claim from the already-built WIO, plus `run_explanation_agent`, the one seam where a language model runs. `reviewer_agent` is a hard gate on two counts: a claim citing an `evidence_id` not present in the retrieved evidence flips the request to a 503, **and** the value attached to that citation is recomputed from the cited evidence (`app/agents/verification.py`) and must match. LLM prose is checked instead for quantities the pipeline never produced. `run_explanation_agent` is inert unless `WEATHERGPT_LLM_ENABLED=true` and `GROQ_API_KEY` is set; it writes prose only, never selects a source, never originates a number, and degrades to the deterministic template answer on any failure.
+**Agents (`app/agents/orchestrator.py`)** — seven deterministic Python functions that each derive a claim from the already-built WIO, plus `run_explanation_agent`, the one seam where a language model runs. `reviewer_agent` is a hard gate on two counts: a claim citing an `evidence_id` not present in the retrieved evidence flips the request to a 503, **and** the value attached to that citation is recomputed from the cited evidence (`app/agents/verification.py`) and must match. LLM prose is checked instead for quantities the pipeline never produced. `run_explanation_agent` is inert unless `LLM_ENABLED=true` and the small LLM tier (`SMALL_LLM_MODEL`/`_BASE_URL`/`_KEY` in `.env`) is configured; it writes prose only, never selects a source, never originates a number, and degrades to the deterministic template answer on any failure.
 
 **RADE (`app/rade/v2.py`, function `decide`)** — the risk-aware decision engine for questions like "should I spray." Builds 2 (or, with ensemble member data, 5-bin) scenarios from `wio.weather.rain`, scores each action as `expected_utility − risk_lambda·downside_risk`, picks the argmax. Returns `defer_decision` rather than guessing when evidence is insufficient — never fabricates a probability or amount. This is the *only* RADE implementation in `app/` — an older parallel v1 (`enumerator.py`/`utility.py`/`policy.py`) existed and was silently computed-but-discarded on every request; it's been removed from `app/` (still present, unmodified, in the separate frozen `kaggle_kernel/app/` snapshot, whose own `main.py` genuinely depends on it — don't delete that copy).
 
@@ -277,7 +354,10 @@ India is preferred by **scoring, not filtering** (`ranking.py`): `log10(populati
 - `cloud.md` at the repo root is the live outstanding-work register. It was rewritten at the end of the 2026-09 hardening pass to record what remains, not what was fixed. Read it before proposing work.
 - `docs/SERVICES.md` explains every service in plain language — mechanism, connections, and known faults. Start there.
 - All ML training code (`training/`, `kaggle_kernel_m3/`) and the Kaggle training guide were removed from this repo as of this change — training now happens in a separate repo. See `model.md` for the full handoff.
+- `CAPABILITY_MAP.md` + per-module `SPEC-*.md` files + `tasks/{plan,todo}.md` track the 2026-09-04 guardrail/marine/geoapify initiative module by module — read `CAPABILITY_MAP.md` first for what's built vs. deferred before starting related work.
+- `TUNING_GUIDE.md` maps "I want to change X" to the exact file — check there before searching.
+- `AWS.md` + `weathergpt.service` are the EC2 deployment path (Docker + systemd, survives reboot).
 
 ## Code style
 
-Match the existing codebase: no unnecessary comments (only ones explaining non-obvious *why*, never restating *what* the code does), no emojis, no debug prints. Don't create new files without a clear reason.
+Match the existing codebase: no unnecessary comments (only ones explaining non-obvious *why*, never restating *what* the code does), no emojis, no debug prints. Don't create new files without a clear reason. `coding_rules.md` at the repo root is a stricter, more detailed rule set the user asked to be followed on every change going forward — it doesn't contradict the above, it's more exhaustive (import hygiene, dead-code removal, performance/data-structure choices, cache-artifact cleanup after each task).
