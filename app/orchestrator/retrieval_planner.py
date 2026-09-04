@@ -26,6 +26,8 @@ _VARIABLE_FAMILIES = {
     "precipitation": ["precipitation_amount", "precipitation_probability"],
     "temperature": ["temperature_2m", "temperature_max", "temperature_min"],
     "wind": ["wind_speed", "wind_gust"],
+    "marine": ["wave_height", "wave_direction", "wave_period",
+              "ocean_current_velocity", "ocean_current_direction", "sea_surface_temperature"],
 }
 
 _DECISION_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -39,7 +41,8 @@ _DECISION_KEYWORDS: dict[str, tuple[str, ...]] = {
 _RAIN_WORDS = ("rain", "rainfall", "baarish", "barish", "बरसात", "precipitation", "precip", "shower", "showers")
 _TEMPERATURE_WORDS = ("temperature", "temp", "hot", "cold", "heat", "mausam", "मौसम")
 _WIND_WORDS = ("wind", "windy", "gust", "gusts", "hawa", "हवा")
-_WARNING_WORDS = ("warning", "warnings", "alert", "alerts", "cyclone", "storm", "flood")
+_WARNING_WORDS = ("warning", "warnings", "alert", "alerts", "cyclone", "storm", "flood", "flooding", "heatwave")
+_MARINE_WORDS = ("wave", "waves", "swell", "current", "currents", "tide", "tides", "surf")
 _UNCERTAINTY_WORDS = ("probability", "chance", "chances", "likely", "uncertain", "uncertainty")
 _HISTORY_WORDS = ("usual", "usually", "history", "historical", "climate", "normal", "average", "typically")
 
@@ -66,6 +69,9 @@ def build_retrieval_plan(question: str, horizon: str, decision_type: str | None 
         variables.extend(_VARIABLE_FAMILIES["temperature"])
     if has_word(text, _WIND_WORDS) or decision in {"spray", "marine", "travel"}:
         variables.extend(_VARIABLE_FAMILIES["wind"])
+    need_marine = has_word(text, _MARINE_WORDS) or decision == "marine"
+    if need_marine:
+        variables.extend(_VARIABLE_FAMILIES["marine"])
     if not variables:
         variables = _VARIABLE_FAMILIES["temperature"] + _VARIABLE_FAMILIES["precipitation"]
     variables = list(dict.fromkeys(variables))
@@ -79,6 +85,10 @@ def build_retrieval_plan(question: str, horizon: str, decision_type: str | None 
         classes.append("warning")
         sources.extend(["CAP", "IMD"])
         reasons.append("official warnings relevant")
+
+    if need_marine:
+        sources.extend(["OPEN_METEO_MARINE", "STORMGLASS"])
+        reasons.append("marine conditions requested")
 
     need_ensemble = decision is not None or has_word(text, _UNCERTAINTY_WORDS)
     if need_ensemble:

@@ -24,6 +24,8 @@ class EvidenceSource(str, Enum):
     GEFS = "GEFS"
     NASA_POWER = "NASA_POWER"
     MET_NORWAY = "MET_NORWAY"
+    OPEN_METEO_MARINE = "OPEN_METEO_MARINE"
+    STORMGLASS = "STORMGLASS"
     OTHER = "OTHER"
 
 class EvidenceClass(str, Enum):
@@ -60,6 +62,12 @@ class CanonicalVariable(str, Enum):
     flood_warning = "flood_warning"
     marine_warning = "marine_warning"
     visibility = "visibility"
+    wave_height = "wave_height"
+    wave_direction = "wave_direction"
+    wave_period = "wave_period"
+    ocean_current_velocity = "ocean_current_velocity"
+    ocean_current_direction = "ocean_current_direction"
+    sea_surface_temperature = "sea_surface_temperature"
     other = "other"
 
 class Statistic(str, Enum):

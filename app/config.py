@@ -125,6 +125,11 @@ class Settings:
     # request path. This caps the whole chain so a long fallback list cannot stall a user.
     llm_total_timeout_seconds: float = float(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", "20"))
     llm_max_words: int = int(os.getenv("WEATHERGPT_LLM_MAX_WORDS", "120"))
+    # A prompt-level instruction, not a verified gate — there's no mechanical check for
+    # tone the way the reviewer mechanically checks numeric grounding. Editable without a
+    # code change so the wording can be tuned freely later.
+    explanation_tone_directive: str = os.getenv(
+        "WEATHERGPT_EXPLANATION_TONE", "clear, neutral, and helpful — not overly casual, not overly formal")
     small_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("SMALL"))
     big_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("BIG"))
 
@@ -149,6 +154,12 @@ class Settings:
     # OSM policy requires a real identifying User-Agent and at most 1 request/second.
     nominatim_user_agent: str = os.getenv("WEATHERGPT_NOMINATIM_USER_AGENT", "WeatherGPT/1.0 (weather intelligence backend)")
     nominatim_min_interval_seconds: float = float(os.getenv("WEATHERGPT_NOMINATIM_MIN_INTERVAL_SECONDS", "1.0"))
+    # Primary geocoder when set; the existing keyless chain (Open-Meteo, Nominatim) is
+    # unaffected when this is empty — GeoapifyGeocoder.search() just returns [].
+    geoapify_api_key: str = os.getenv("GEOAPIFY_API_KEY", "")
+    # Fallback marine source when OPEN_METEO_MARINE yields nothing; unconfigured means
+    # only the primary marine source runs (same degrade-gracefully convention as IMD).
+    stormglass_api_key: str = os.getenv("STORMGLASS_API_KEY", "")
 
     # Source credentials and endpoints
     cap_feed_url: str = os.getenv("CAP_FEED_URL", "https://cap-sources.s3.amazonaws.com/in-imd-en/rss.xml")
@@ -187,6 +198,13 @@ class Settings:
     follow_up_context_enabled: bool = _flag("WEATHERGPT_FOLLOW_UP_CONTEXT_ENABLED", "true")
     follow_up_context_ttl_seconds: int = int(os.getenv("WEATHERGPT_FOLLOW_UP_CONTEXT_TTL_SECONDS", "300"))
     follow_up_context_max_entries: int = int(os.getenv("WEATHERGPT_FOLLOW_UP_CONTEXT_MAX_ENTRIES", "4096"))
+
+    # A VERIFY decision ("did you mean Bangalore?") stores its candidate here so the next
+    # turn in the same session can confirm it instead of re-guessing. Short TTL: a stale
+    # pending verification silently answering an unrelated later question is worse than
+    # asking again.
+    verify_pending_ttl_seconds: int = int(os.getenv("WEATHERGPT_VERIFY_PENDING_TTL_SECONDS", "120"))
+    verify_pending_max_entries: int = int(os.getenv("WEATHERGPT_VERIFY_PENDING_MAX_ENTRIES", "4096"))
 
     cors_origins: tuple[str, ...] = tuple(
         item.strip() for item in os.getenv("WEATHERGPT_CORS_ORIGINS", "").split(",") if item.strip()

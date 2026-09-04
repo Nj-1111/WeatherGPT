@@ -136,7 +136,7 @@ _EXPLANATION_SYSTEM = (
     "Use ONLY the figures in the fact sheet. Never introduce a number, quantity, date or place "
     "that is not there, never estimate, and never contradict the assessment. If a figure is "
     "absent, say it is not available. Answer in {lang}, in at most {max_words} words, as plain "
-    "prose with no headings, no lists and no markdown."
+    "prose with no headings, no lists and no markdown. Tone: {tone_directive}."
 )
 
 
@@ -193,7 +193,8 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     panel_ids=_panel_evidence_ids(wio)
     if not panel_ids:
         return _result([], "success")
-    messages=[{"role": "system", "content": _EXPLANATION_SYSTEM.format(lang=lang, max_words=settings.llm_max_words)},
+    messages=[{"role": "system", "content": _EXPLANATION_SYSTEM.format(
+                  lang=lang, max_words=settings.llm_max_words, tone_directive=settings.explanation_tone_directive)},
               {"role": "user", "content": _fact_sheet(wio, decision)}]
     result=await small_llm(messages, max_tokens=settings.llm_max_words * 4)
     if not result.available:

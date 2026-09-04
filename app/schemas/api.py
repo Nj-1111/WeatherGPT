@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.location import ResolvedLocation
+
 
 class LocationInput(BaseModel):
     raw: str | None = Field(default=None, max_length=256)
@@ -57,3 +59,12 @@ class FeedbackRequest(BaseModel):
     decision_id: str | None = None
     actual_outcome: dict[str, Any]
     user_feedback: str | None = Field(default=None, max_length=2048)
+
+
+class LocationOnlyResponse(BaseModel):
+    """The ACCEPT_LOCATION_ONLY branch's one response shape, identical across every
+    endpoint — a coordinates-only answer doesn't change meaning depending on which route
+    happened to receive it."""
+    answer: str
+    location: ResolvedLocation
+    request_id: str

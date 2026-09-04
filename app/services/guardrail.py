@@ -11,14 +11,19 @@ from app.config import settings
 from app.errors import WeatherGPTError
 from app.orchestrator.retrieval_planner import has_word
 
-_TOPIC_WORDS = (
+TOPIC_WORDS = (
     "weather", "forecast", "rain", "rainfall", "rains", "raining", "shower", "showers",
     "temperature", "temp", "hot", "cold", "heat", "humid", "humidity", "wind", "windy",
-    "gust", "storm", "thunderstorm", "cyclone", "flood", "fog", "snow", "hail", "monsoon",
+    "gust", "storm", "thunderstorm", "cyclone", "flood", "flooding", "fog", "snow", "hail", "monsoon",
     "climate", "sunny", "cloudy", "cloud", "warning", "warnings", "alert", "alerts",
     "precipitation", "drizzle", "mausam", "baarish", "barish", "hawa",
     "spray", "spraying", "irrigate", "irrigation", "harvest", "harvesting", "travel",
     "drive", "driving", "fish", "fishing", "sail", "sowing",
+    # marine/fishing conditions, mountain weather, route/disaster framing — widened
+    # alongside query_guardrail.py's own scope broadening
+    "wave", "waves", "current", "currents", "swell", "tide", "tides", "ocean", "sea",
+    "mountain", "mountains", "trek", "trekking", "hiking", "summit", "altitude",
+    "route", "commute", "journey", "disaster", "evacuate", "evacuation",
 )
 
 _INJECTION = re.compile(
@@ -58,8 +63,8 @@ def _fast_reason(text: str) -> str | None:
 def check_question_fast(question: str) -> None:
     """Raise WeatherGPTError on the cheap, deterministic checks only.
 
-    Topic relevance is NOT checked here — that's the LLM extractor's job
-    (services/query_extractor.py). This exists so garbage/injection input is
+    Topic relevance is NOT checked here — that's the guardrail's job
+    (services/query_guardrail.py). This exists so garbage/injection input is
     rejected before it ever reaches the LLM, not instead of the topic check.
     """
     if not settings.guardrail_enabled:
@@ -73,14 +78,14 @@ def check_question(question: str) -> None:
     """Full deterministic gate: fast checks plus the topic-word check.
 
     Used directly when the guardrail runs standalone, and as the fallback path
-    inside query_extractor.extract_and_normalize when the LLM is unavailable —
-    so topic relevance still gets *some* check rather than none.
+    inside query_guardrail.run_guardrail when the LLM is unavailable — so topic
+    relevance still gets *some* check rather than none.
     """
     if not settings.guardrail_enabled:
         return
     text = (question or "").strip()
     reason = _fast_reason(text)
-    if reason is None and not has_word(text.casefold(), _TOPIC_WORDS):
+    if reason is None and not has_word(text.casefold(), TOPIC_WORDS):
         reason = "Question is not a weather request. Ask about weather conditions, or a weather-dependent decision."
     if reason:
         raise WeatherGPTError("QUESTION_REJECTED", reason, {"question_length": len(text)}, 400)

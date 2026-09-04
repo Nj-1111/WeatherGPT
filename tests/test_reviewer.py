@@ -1,5 +1,6 @@
 """The anti-hallucination gate: claimed values are recomputed from the evidence they cite."""
 import asyncio
+import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -11,6 +12,7 @@ from app.agents.orchestrator import (
     run_reviewer_agent,
 )
 from app.agents.verification import check_prose_grounding
+from app.config import settings
 from app.llm.client import LLMResult
 from app.main import app
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
@@ -144,6 +146,21 @@ def _with_llm(monkeypatch, text):
         return LLMResult(tier="small", available=True, text=text, model="test-model", host="test.invalid")
     monkeypatch.setattr("app.agents.orchestrator.small_llm", fake_small)
     monkeypatch.setattr("app.agents.orchestrator.is_configured", lambda tier: True)
+
+
+def test_explanation_prompt_carries_the_configured_tone_directive(monkeypatch):
+    captured = {}
+
+    async def fake_small(messages, **kwargs):
+        captured["system"] = messages[0]["content"]
+        return LLMResult(tier="small", available=True, text="Rain is expected.", model="test-model", host="test.invalid")
+    monkeypatch.setattr("app.agents.orchestrator.small_llm", fake_small)
+    monkeypatch.setattr("app.agents.orchestrator.is_configured", lambda tier: True)
+    monkeypatch.setattr("app.agents.orchestrator.settings", dataclasses.replace(
+        settings, explanation_tone_directive="strictly formal and concise"))
+
+    asyncio.run(run_explanation_agent(_wio(_evidence()), None))
+    assert "strictly formal and concise" in captured["system"]
 
 
 def test_ungrounded_explanation_is_suppressed_and_the_request_survives(monkeypatch):

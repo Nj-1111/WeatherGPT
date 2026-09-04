@@ -19,16 +19,17 @@ from datetime import datetime
 
 from app.config import settings
 from app.schemas.location import ResolvedLocation
-from app.schemas.query import NormalizedQuery, ResolvedContext
+from app.schemas.query import GuardrailDecision, ResolvedContext
 from app.storage.memory import InMemorySessionStore
 
 _store = InMemorySessionStore(settings.follow_up_context_max_entries, settings.follow_up_context_ttl_seconds)
+_verify_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
 
 
-async def evaluate_follow_up(session_id: str, normalized_query: NormalizedQuery) -> ResolvedContext | None:
+async def evaluate_follow_up(session_id: str, decision: GuardrailDecision) -> ResolvedContext | None:
     """None means "resolve normally": a new explicit location was named, or nothing (or
     nothing unexpired) is stored for this session."""
-    if normalized_query.normalized_location:
+    if decision.location:
         return None
     payload = await _store.get(session_id)
     if payload is None:
@@ -49,6 +50,20 @@ async def store_context(session_id: str, location: ResolvedLocation, valid_from:
         time_confidence=time_confidence,
     )
     await _store.put(session_id, context.model_dump(mode="json"))
+
+
+async def store_pending_verification(session_id: str, original_text: str, candidate: str) -> None:
+    await _verify_store.put(session_id, {"original_text": original_text, "candidate": candidate})
+
+
+async def consume_pending_verification(session_id: str) -> tuple[str, str] | None:
+    """Reads and clears in one call — a pending verification only ever applies to the
+    single next turn, confirmed or not."""
+    payload = await _verify_store.get(session_id)
+    if payload is None:
+        return None
+    await _verify_store.drop(session_id)
+    return payload["original_text"], payload["candidate"]
 
 
 def status() -> dict:

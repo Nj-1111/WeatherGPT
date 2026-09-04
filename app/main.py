@@ -21,17 +21,18 @@ from app.config import settings
 from app.errors import WeatherGPTError
 from app.llm.client import is_configured
 from app.logging_config import configure_logging, request_id_var
-from app.orchestrator.retrieval_planner import build_retrieval_plan
+from app.orchestrator.retrieval_planner import build_retrieval_plan, has_word
 from app.rade.v2 import decide
 from app.schemas.api import (
     ContextRequest,
     DecisionRequest,
     FeedbackRequest,
     LocationInput,
+    LocationOnlyResponse,
     QueryRequestV1,
 )
 from app.schemas.location import ResolvedLocation
-from app.schemas.query import NormalizedQuery
+from app.schemas.query import GuardrailAction, GuardrailDecision
 from app.services import location_resolver, session_router
 from app.services.auth import key_scope, verify_api_key
 from app.services.cache import weather_cache
@@ -43,7 +44,11 @@ from app.services.location_resolver import (
     extract_location,
     resolve_location,
 )
-from app.services.query_extractor import extract_and_normalize
+from app.services.query_guardrail import (
+    render_guardrail_message,
+    resolve_confirmed_location,
+    run_guardrail,
+)
 from app.services.rate_limit import RateLimiter
 from app.services.retrieval import retrieve
 from app.services.semantic_gate import validated_evidence
@@ -174,38 +179,60 @@ async def _resolve_location(location: LocationInput | None, question: str,
     raise WeatherGPTError("LOCATION_REQUIRED", "Provide a city, pincode, or latitude/longitude; no location is stored or inferred.", {}, 422)
 
 
-async def _understand_query(question: str) -> NormalizedQuery | None:
-    """LLM-first extraction funnel: location/time/intent/topic in one call.
+_GUARDRAIL_ERROR_CODES = {
+    GuardrailAction.REJECT_OFF_TOPIC: "QUESTION_REJECTED",
+    GuardrailAction.CLARIFY: "CLARIFICATION_NEEDED",
+    GuardrailAction.VERIFY: "LOCATION_VERIFICATION_NEEDED",
+    GuardrailAction.UNSUPPORTED_TOPIC: "TOPIC_NOT_SUPPORTED",
+}
+_AFFIRMATION_WORDS = ("yes", "yeah", "yep", "yup", "correct", "right", "haan", "ha", "sahi")
 
-    Runs after the free length/injection pre-filter and before geocoding, so a
-    junk payload never reaches the LLM and an off-topic one never reaches a
-    weather source. Returns None when disabled — callers fall back to the
-    original regex-only path untouched.
+
+async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> GuardrailDecision | None:
+    """Runs before any location/time/retrieval work. None means disabled — callers fall
+    back to the original regex-only, no-topic-gate behavior untouched.
+
+    A pending VERIFY from a previous turn takes priority: if this turn's session has one
+    and the new text reads as a plain affirmation, that confirms the candidate instead of
+    running the guardrail fresh on a bare "yes".
     """
     if not settings.query_understanding_enabled:
         return None
-    normalized = await extract_and_normalize(question)
-    if not normalized.is_weather_related or normalized.confidence_score < settings.query_understanding_confidence_threshold:
-        raise WeatherGPTError(
-            "QUESTION_REJECTED",
-            "I can only answer weather and climate-related queries. Please ask about the weather in a specific location.",
-            {"confidence_score": normalized.confidence_score, "intent": normalized.intent.value}, 400)
-    return normalized
+    if req.session_id and settings.follow_up_context_enabled:
+        pending = await session_router.consume_pending_verification(_scoped_id(request, req.session_id))
+        if pending is not None and has_word(req.question.casefold(), _AFFIRMATION_WORDS):
+            original_text, candidate = pending
+            return resolve_confirmed_location(original_text, candidate)
+    return await run_guardrail(req.question)
 
 
-async def _weather_request(req: QueryRequestV1, request: Request) -> tuple[Any, list, dict[str, Any], list, Any, Any]:
+async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | tuple[Any, list, dict[str, Any], list, Any, Any]:
     started = time.monotonic()
     check_question_fast(req.question)
-    normalized_query = await _understand_query(req.question)
+    guard_decision = await _resolve_guardrail_decision(req, request)
 
+    if guard_decision is not None and guard_decision.action in _GUARDRAIL_ERROR_CODES:
+        if guard_decision.action == GuardrailAction.VERIFY and req.session_id and settings.follow_up_context_enabled:
+            await session_router.store_pending_verification(
+                _scoped_id(request, req.session_id), guard_decision.original_text, guard_decision.verify_candidate or "")
+        message = render_guardrail_message(guard_decision)
+        assert message is not None  # guaranteed for every action in _GUARDRAIL_ERROR_CODES
+        raise WeatherGPTError(_GUARDRAIL_ERROR_CODES[guard_decision.action], message,
+                              {"action": guard_decision.action.value}, 400)
+
+    if guard_decision is not None and guard_decision.action == GuardrailAction.ACCEPT_LOCATION_ONLY:
+        # Nothing else runs: no time parsing, no retrieval, no fusion, no agents, no RADE.
+        return await _resolve_location(req.location, req.question, guard_decision.location)
+
+    # guard_decision is None (disabled) or ACCEPT_WEATHER_FULL — the full pipeline, unchanged.
     # An explicit request-level location always wins, exactly as before — the follow-up
     # short-circuit only ever fires when the caller supplied no location this turn either
-    # way (neither `location` nor a location phrase the extractor found).
+    # way (neither `location` nor a location phrase the guardrail found).
     has_explicit_location = bool(req.location and (req.location.raw or req.location.has_coordinates()))
     cached_context = None
-    if (req.session_id and normalized_query is not None and not has_explicit_location
+    if (req.session_id and guard_decision is not None and not has_explicit_location
             and settings.follow_up_context_enabled):
-        cached_context = await session_router.evaluate_follow_up(_scoped_id(request, req.session_id), normalized_query)
+        cached_context = await session_router.evaluate_follow_up(_scoped_id(request, req.session_id), guard_decision)
 
     if cached_context is not None:
         location = ResolvedLocation(
@@ -213,17 +240,17 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> tuple[Any, 
             lon=cached_context.resolved_lon, timezone=cached_context.timezone, confidence=1.0,
             source="session_context", normalized_name=cached_context.resolved_location_name,
             resolution_method="follow_up_cache")
-        if normalized_query and normalized_query.normalized_time:
+        if guard_decision and guard_decision.time:
             # A new time phrase was given even though the location was carried over —
             # re-derive the window rather than silently reusing a stale one.
             valid_from, valid_to, horizon, time_confidence = parse_time_window(
-                normalized_query.normalized_time, tz=req.timezone or location.timezone)
+                guard_decision.time, tz=req.timezone or location.timezone)
         else:
             valid_from, valid_to = cached_context.valid_from, cached_context.valid_to
             horizon, time_confidence = cached_context.horizon, cached_context.time_confidence
     else:
-        extracted_phrase = normalized_query.normalized_location if normalized_query else None
-        time_text = (normalized_query.normalized_time if normalized_query and normalized_query.normalized_time
+        extracted_phrase = guard_decision.location if guard_decision else None
+        time_text = (guard_decision.time if guard_decision and guard_decision.time
                     else req.question)
         location = await _resolve_location(req.location, req.question, extracted_phrase)
         valid_from, valid_to, horizon, time_confidence = parse_time_window(
@@ -300,11 +327,20 @@ async def health():
             "models": {"bias_correction": "not wired; responses use raw uncorrected forecast evidence"}}
 
 
+def _location_only_response(location: ResolvedLocation, request: Request) -> LocationOnlyResponse:
+    name = location.normalized_name or location.raw
+    return LocationOnlyResponse(answer=f"{name} is at {location.lat}, {location.lon}.",
+                                location=location, request_id=request.state.request_id)
+
+
 @app.post("/wio/query")
 @app.post("/api/v1/wio/query")
 async def wio_query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
-    wio, evidence, retrieval_status, agents, _, _ = await _weather_request(req, request)
+    result = await _weather_request(req, request)
+    if isinstance(result, ResolvedLocation):
+        return _location_only_response(result, request)
+    wio, evidence, retrieval_status, agents, _, _ = result
     return {"wio": wio, "evidence_count": len(evidence), "retrieval": retrieval_status, "agents": agents, "request_id": request.state.request_id}
 
 
@@ -312,7 +348,10 @@ async def wio_query_v1(req: QueryRequestV1, request: Request):
 @app.post("/api/v1/query")
 async def query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
-    wio, _, retrieval_status, agents, _, decision = await _weather_request(req, request)
+    result = await _weather_request(req, request)
+    if isinstance(result, ResolvedLocation):
+        return _location_only_response(result, request)
+    wio, _, retrieval_status, agents, _, decision = result
     return {"answer": _synthesize(wio, decision, agents), "wio": wio, "decision": decision, "agents": agents,
             "retrieval": retrieval_status, "request_id": request.state.request_id}
 
@@ -323,12 +362,15 @@ async def query_v1(req: QueryRequestV1, request: Request):
 async def decision_endpoint(req: DecisionRequest, request: Request):
     _metrics["requests"] += 1
     started = time.monotonic()
-    wio, evidence, retrieval_status, agents, profile, result = await _weather_request(req, request)
-    if result is None:
-        result = decide(wio, profile, req.decision_type or req.question)
-    result.evidence_ids = [item.evidence_id for item in evidence]
+    result = await _weather_request(req, request)
+    if isinstance(result, ResolvedLocation):
+        return _location_only_response(result, request)
+    wio, evidence, retrieval_status, agents, profile, rade_result = result
+    if rade_result is None:
+        rade_result = decide(wio, profile, req.decision_type or req.question)
+    rade_result.evidence_ids = [item.evidence_id for item in evidence]
     _metrics["rade_latency_ms_total"] += (time.monotonic() - started) * 1000
-    return {"decision": result, "wio": wio, "agents": agents, "retrieval": retrieval_status, "request_id": request.state.request_id}
+    return {"decision": rade_result, "wio": wio, "agents": agents, "retrieval": retrieval_status, "request_id": request.state.request_id}
 
 
 @app.get("/evidence/{evidence_id}")
@@ -356,13 +398,19 @@ async def post_feedback(req: FeedbackRequest, request: Request):
 
 @app.get("/warnings/active")
 async def active_warnings(request: Request, location: str, question: str = "warnings today"):
-    wio, _, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
+    result = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
+    if isinstance(result, ResolvedLocation):
+        return _location_only_response(result, request)
+    wio, _, retrieval, _, _, _ = result
     return {"warnings": [wio.official_warning] if wio.official_warning.active else [], "retrieval": retrieval}
 
 
 @app.get("/forecast")
 async def forecast(request: Request, location: str, question: str = "weather today"):
-    wio, evidence, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
+    result = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
+    if isinstance(result, ResolvedLocation):
+        return _location_only_response(result, request)
+    wio, evidence, retrieval, _, _, _ = result
     return {"wio": wio, "retrieval": retrieval, "evidence_count": len(evidence)}
 
 

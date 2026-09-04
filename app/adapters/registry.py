@@ -11,6 +11,8 @@ from app.adapters.nasa_power import NasaPowerAdapter
 from app.adapters.open_meteo_ensemble import OpenMeteoEnsembleAdapter
 from app.adapters.open_meteo_forecast import OpenMeteoForecastAdapter
 from app.adapters.open_meteo_historical import OpenMeteoHistoricalAdapter
+from app.adapters.open_meteo_marine import OpenMeteoMarineAdapter
+from app.adapters.stormglass_adapter import StormglassAdapter
 from app.config import settings
 from app.services.cache import TTLCache
 
@@ -25,6 +27,8 @@ REGISTRY = {
     "IMD": ImdAdapter(),
     "GFS": Grib2Adapter(),
     "MET_NORWAY": MetNorwayAdapter(),
+    "OPEN_METEO_MARINE": OpenMeteoMarineAdapter(),
+    "STORMGLASS": StormglassAdapter(),
 }
 
 async def health_all() -> dict[str, dict]:

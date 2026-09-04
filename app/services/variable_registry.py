@@ -66,6 +66,14 @@ DEFAULT_REGISTRY: dict[str, dict] = {
     "wdir": {"canonical": "wind_direction", "statistic": "instant", "unit": "deg"},
     # A summary row standing in for many ensemble members, not a measurement.
     "rainfall_distribution": {"canonical": "rainfall_distribution", "statistic": "instant", "unit": "members", "evidence_class": ["forecast"]},
+    # marine — wave/current/sea-surface data, distinct from marine_warning (categorical
+    # CAP alerts above): these are measured forecast values, not warnings.
+    "wave_height": {"canonical": "wave_height", "statistic": "instant", "unit": "m", "evidence_class": ["forecast"]},
+    "wave_direction": {"canonical": "wave_direction", "statistic": "instant", "unit": "deg", "evidence_class": ["forecast"]},
+    "wave_period": {"canonical": "wave_period", "statistic": "instant", "unit": "s", "evidence_class": ["forecast"]},
+    "ocean_current_velocity": {"canonical": "ocean_current_velocity", "statistic": "instant", "unit": "km/h", "evidence_class": ["forecast"]},
+    "ocean_current_direction": {"canonical": "ocean_current_direction", "statistic": "instant", "unit": "deg", "evidence_class": ["forecast"]},
+    "sea_surface_temperature": {"canonical": "sea_surface_temperature", "statistic": "instant", "unit": "C", "evidence_class": ["forecast"]},
 }
 
 _BY_CANONICAL: dict[str, list[dict]] = defaultdict(list)

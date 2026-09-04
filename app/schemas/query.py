@@ -1,6 +1,6 @@
-"""Output contract for the LLM-based query extraction funnel (see services/query_extractor.py).
+"""Output contract for the guardrail decision funnel (see services/query_guardrail.py).
 
-Fields are intentionally minimal — this is what the extractor produces, not a place to
+Fields are intentionally minimal — this is what the guardrail produces, not a place to
 accumulate downstream state.
 """
 from __future__ import annotations
@@ -11,28 +11,44 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
-class QueryIntent(str, Enum):
-    CURRENT = "current"
-    FORECAST = "forecast"
-    ALERTS = "alerts"
-    HISTORICAL = "historical"
-    UNKNOWN = "unknown"
+ExtractionSource = Literal["llm", "deterministic_fallback", "confirmed"]
 
 
-ExtractionSource = Literal["llm", "deterministic_fallback"]
+class GuardrailAction(str, Enum):
+    """What the guardrail decided to do with a query — the real dispatch key. Every value
+    maps to a distinct code path in the request handler: ACCEPT_LOCATION_ONLY calls only
+    the location resolver; ACCEPT_WEATHER_FULL runs the full pipeline; the other four
+    return a rendered message immediately with no further calls at all.
+    """
+    ACCEPT_LOCATION_ONLY = "accept_location_only"
+    ACCEPT_WEATHER_FULL = "accept_weather_full"
+    REJECT_OFF_TOPIC = "reject_off_topic"
+    CLARIFY = "clarify"
+    VERIFY = "verify"
+    # Recognized as a real question, but about a hazard this system has no data for
+    # (earthquake, tsunami, wildfire, ...) — distinct from REJECT_OFF_TOPIC, which means
+    # the question isn't a weather/disaster/location question at all. Answering with
+    # generic weather data here would be wrong, not just unhelpful.
+    UNSUPPORTED_TOPIC = "unsupported_topic"
 
 
-class NormalizedQuery(BaseModel):
+class ClarifyReason(str, Enum):
+    GARBLED_INPUT = "garbled_input"
+    NO_LOCATION = "no_location"
+
+
+class GuardrailDecision(BaseModel):
+    """Output of services/query_guardrail.py. A strict decision-tree classification,
+    not a graded judgment — see that module's system prompt for the exact rules the LLM
+    (or the deterministic fallback) applies, in order, to reach one action."""
     original_text: str
-    normalized_location: str | None = None
-    normalized_time: str | None = None
-    intent: QueryIntent = QueryIntent.UNKNOWN
-    is_weather_related: bool = True
-    confidence_score: float = Field(ge=0.0, le=1.0, default=0.0)
-    # Observability: which code path produced this read, for cost/latency tracking in
-    # production. Defaults to the fallback because that's correct whenever construction
-    # short-circuits before the LLM path explicitly marks itself "llm".
+    action: GuardrailAction
+    location: str | None = None
+    time: str | None = None
+    verify_candidate: str | None = None
+    clarify_reason: ClarifyReason | None = None
+    unsupported_topic: str | None = None
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     extraction_source: ExtractionSource = "deterministic_fallback"
 
 

@@ -59,6 +59,24 @@ def test_temperature_is_a_range_over_the_window():
     assert (wio.weather.temperature["min"], wio.weather.temperature["max"]) == (22.5, 29.2)
 
 
+def test_marine_panel_reports_peak_wave_height_and_latest_direction():
+    ceos = [_ceo("wave_height", value, hour, unit="m", statistic="instant")
+            for hour, value in enumerate([1.2, 2.1, 1.8])]
+    ceos += [_ceo("wave_direction", direction, hour, unit="deg", statistic="instant")
+            for hour, direction in enumerate([180.0, 190.0, 200.0])]
+    wio = build_wio("wave height tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.weather.marine["wave_height_m"] == 2.1
+    assert wio.weather.marine["wave_direction_deg"] == 200.0  # latest reading, not peak
+    assert wio.weather.marine["source"] == "OPEN_METEO"
+    assert len(wio.weather.marine["evidence_ids"]) == 2
+
+
+def test_marine_panel_is_none_without_marine_evidence():
+    ceos = [_ceo("temperature_2m", 25.0, 0, unit="C", statistic="instant")]
+    wio = build_wio("weather tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.weather.marine is None
+
+
 def test_one_source_reporting_two_variables_is_not_agreement():
     ceos = [_ceo("precipitation_amount", 1.0, 0, window=1),
             _ceo("temperature_2m", 25.0, 0, unit="C", statistic="instant")]

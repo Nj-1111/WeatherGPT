@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from app.schemas.location import ResolvedLocation
-from app.schemas.query import NormalizedQuery
+from app.schemas.query import GuardrailAction, GuardrailDecision
 from app.services import session_router
 from app.storage.memory import InMemorySessionStore
 
@@ -14,9 +14,9 @@ MUMBAI = ResolvedLocation(raw="Mumbai", lat=19.076, lon=72.8777, timezone="Asia/
                           normalized_name="Mumbai")
 
 
-def _query(location: str | None, text: str = "weather") -> NormalizedQuery:
-    return NormalizedQuery(original_text=text, normalized_location=location,
-                           is_weather_related=True, confidence_score=0.9)
+def _query(location: str | None, text: str = "weather") -> GuardrailDecision:
+    return GuardrailDecision(original_text=text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
+                             location=location, confidence=0.9)
 
 
 def _window():
@@ -70,3 +70,21 @@ def test_different_session_ids_do_not_share_context(monkeypatch):
 
     result = asyncio.run(session_router.evaluate_follow_up("s2", _query(None, "how about the wind?")))
     assert result is None
+
+
+def test_pending_verification_is_read_back(monkeypatch):
+    monkeypatch.setattr(session_router, "_verify_store", InMemorySessionStore(8, 300))
+    asyncio.run(session_router.store_pending_verification("s1", "weather in bnglr", "Bangalore"))
+    result = asyncio.run(session_router.consume_pending_verification("s1"))
+    assert result == ("weather in bnglr", "Bangalore")
+
+
+def test_pending_verification_is_cleared_after_one_read(monkeypatch):
+    monkeypatch.setattr(session_router, "_verify_store", InMemorySessionStore(8, 300))
+    asyncio.run(session_router.store_pending_verification("s1", "weather in bnglr", "Bangalore"))
+    asyncio.run(session_router.consume_pending_verification("s1"))
+    assert asyncio.run(session_router.consume_pending_verification("s1")) is None
+
+
+def test_pending_verification_absent_for_unknown_session():
+    assert asyncio.run(session_router.consume_pending_verification("never-seen")) is None

@@ -21,6 +21,7 @@ class WIOWeather(BaseModel):
     wind: dict[str, Any] | None = None
     temperature: dict[str, Any] | None = None
     humidity: dict[str, Any] | None = None
+    marine: dict[str, Any] | None = None
     other: dict[str, Any] = Field(default_factory=dict)
 
 class WIOWarning(BaseModel):

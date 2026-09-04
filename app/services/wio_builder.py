@@ -131,6 +131,48 @@ def _wind_panel(scored) -> dict | None:
             "evidence_ids": [peak.evidence_id]}
 
 
+# Hazard-relevant fields report the peak over the window (matches _wind_panel's own
+# rationale); direction/period/temperature fields report the most recent reading instead,
+# since maxing a direction or a temperature doesn't mean anything.
+_MARINE_PEAK_FIELDS = (("wave_height", "wave_height_m"), ("ocean_current_velocity", "current_velocity_kmh"))
+_MARINE_LATEST_FIELDS = (("wave_direction", "wave_direction_deg"), ("wave_period", "wave_period_s"),
+                         ("ocean_current_direction", "current_direction_deg"),
+                         ("sea_surface_temperature", "sea_surface_temp_c"))
+
+
+def _marine_panel(scored) -> dict | None:
+    panel: dict[str, object] = {}
+    evidence_ids: list[str] = []
+    sources: set[str] = set()
+
+    for variable, key in _MARINE_PEAK_FIELDS:
+        source = _best_source(scored, variable)
+        if source is None:
+            continue
+        series = _series(scored, variable, source)
+        peak = max(series, key=lambda ev: ev.value or 0.0)
+        panel[key] = round(peak.value or 0.0, 2)
+        evidence_ids.append(peak.evidence_id)
+        sources.add(source)
+
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    for variable, key in _MARINE_LATEST_FIELDS:
+        source = _best_source(scored, variable)
+        if source is None:
+            continue
+        series = _series(scored, variable, source)
+        latest = max(series, key=lambda ev: ev.valid_from or epoch)
+        panel[key] = round(latest.value or 0.0, 2)
+        evidence_ids.append(latest.evidence_id)
+        sources.add(source)
+
+    if not panel:
+        return None
+    panel["source"] = "+".join(sorted(sources))
+    panel["evidence_ids"] = evidence_ids
+    return panel
+
+
 def _warning(ceos, q_lat: float, q_lon: float) -> WIOWarning:
     # A warning whose polygon demonstrably excludes the query point is not this user's
     # warning: the CAP feed is national.
@@ -186,6 +228,7 @@ def build_wio(query_text: str, resolved_location: dict, valid_from, valid_to, ho
     weather.rain, weather.summary = _rain_panel(scored)
     weather.temperature = _temperature_panel(scored)
     weather.wind = _wind_panel(scored)
+    weather.marine = _marine_panel(scored)
 
     disagreements = detect_disagreements(scored)
     if not ceos:

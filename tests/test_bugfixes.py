@@ -224,6 +224,18 @@ def test_a4_place_names_that_already_worked_are_untouched(question, expected):
     assert extract_place_phrase(question) == expected
 
 
+@pytest.mark.parametrize("question,place", [
+    ("is a cyclone coming to Chennai this week", "Chennai"),
+    ("safest route to Pune", "Pune"),
+    ("will the flood reach to Patna", "Patna"),
+])
+def test_extract_place_phrase_recognizes_to_as_a_lead_preposition(question, place):
+    """Disaster/route phrasing ("coming to X", "route to Y") was silently unextractable —
+    the guardrail broadening accepted these topics but location resolution then 422'd."""
+    from app.services.location_resolver.normalize import extract_place_phrase
+    assert extract_place_phrase(question) == place
+
+
 @pytest.mark.parametrize("question,month,day", [
     ("rainfall in Rajkot on 2026-08-01", 8, 1),
     ("will it rain in Rajkot on 5 aug", 8, 5),

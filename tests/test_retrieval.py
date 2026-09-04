@@ -77,3 +77,22 @@ def test_substring_keywords_do_not_hijack_the_plan():
     assert build_retrieval_plan("mango season rainfall", "short").decision_context is None
     assert build_retrieval_plan("should I spray today", "short").decision_context == "spray"
     assert build_retrieval_plan("driving to Pune tomorrow", "short").decision_context == "travel"
+
+
+def test_marine_question_selects_marine_variables_and_sources():
+    plan = build_retrieval_plan("wave height at Chennai tomorrow", "short")
+    assert "wave_height" in plan.variables
+    assert "OPEN_METEO_MARINE" in plan.sources
+    assert "STORMGLASS" in plan.sources
+
+
+def test_non_marine_question_does_not_fetch_marine_sources():
+    plan = build_retrieval_plan("will it rain tomorrow", "short")
+    assert "wave_height" not in plan.variables
+    assert "OPEN_METEO_MARINE" not in plan.sources
+
+
+def test_fishing_decision_also_pulls_marine_data():
+    plan = build_retrieval_plan("should I go fishing tomorrow", "short")
+    assert plan.decision_context == "marine"
+    assert "wave_height" in plan.variables

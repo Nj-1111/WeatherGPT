@@ -38,7 +38,9 @@ _LEAD_PATTERNS = [
     r"\btemperature\s+(?:in|at|for|around|near)\b",
     r"\brain(?:fall)?\s+(?:in|at|for|around|near)\b",
     r"\b(?:will|is|does)\s+it\s+rain\s+(?:in|at|for|around|near)\b",
-    r"\b(?:in|at|for|around|near)\b",
+    # "to" catches disaster/route phrasing ("cyclone coming to X", "route to Y") that the
+    # more specific weather-prefixed patterns above don't need to cover.
+    r"\b(?:in|at|for|around|near|to)\b",
 ]
 
 # Trailing RELATIVE time expressions that are not part of the place name.
