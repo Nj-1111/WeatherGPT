@@ -46,6 +46,28 @@ def test_open_meteo_marine_normalize_handles_malformed_payload():
     assert OpenMeteoMarineAdapter().normalize({}, lat=13.0, lon=80.3) == []
     assert OpenMeteoMarineAdapter().normalize({"hourly": {"time": ["not-a-timestamp"]}}, lat=13.0, lon=80.3) == []
 
+
+def test_cap_alert_links_accepts_query_string_style_urls():
+    """NDMA's feed links to FetchXMLFile?identifier=... (real, valid CAP XML — verified
+    live), not *.xml like IMD's. A suffix-based filter silently dropped every one."""
+    from app.adapters.cap_adapter import CapAdapter
+    index = b"""<rss><channel>
+        <item><link>https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123</link></item>
+        <item><link>https://cap-sources.example.com/alert-42.xml</link></item>
+        <item><link>not-a-url</link></item>
+    </channel></rss>"""
+    links = CapAdapter._alert_links(index)
+    assert links == [
+        "https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123",
+        "https://cap-sources.example.com/alert-42.xml",
+    ]
+
+
+def test_cap_alert_links_empty_for_malformed_index():
+    from app.adapters.cap_adapter import CapAdapter
+    assert CapAdapter._alert_links(b"not xml at all") == []
+
+
 def test_grib2_unavailable():
     import asyncio
     adapter = REGISTRY["GFS"]

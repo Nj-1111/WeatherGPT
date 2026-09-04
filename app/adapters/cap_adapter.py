@@ -50,12 +50,19 @@ class CapAdapter(WeatherSourceAdapter):
 
     @staticmethod
     def _alert_links(payload: bytes) -> list[str]:
+        """Every <item><link> in a CAP index feed is that item's alert document by RSS
+        convention — regardless of URL shape. IMD's feed happens to use *.xml links;
+        NDMA's uses query-string FetchXMLFile?identifier=... links. Filtering on a
+        source-specific suffix silently dropped every NDMA link (verified against the
+        real feed: the linked document is a well-formed CAP 1.2 alert). Malformed links
+        that aren't real CAP XML are still caught downstream by normalize()'s
+        ET.ParseError handling, so accepting any http(s) link here is safe."""
         try:
             root = ET.fromstring(payload)
         except ET.ParseError:
             return []
         return [link.text.strip() for link in root.findall(".//item/link")
-                if link.text and link.text.strip().endswith(".xml")]
+                if link.text and link.text.strip().startswith("http")]
 
     def normalize(self, raw: Any, **kwargs) -> list[CanonicalEvidenceObject]:
         if not raw:
