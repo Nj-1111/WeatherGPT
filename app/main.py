@@ -33,6 +33,7 @@ from app.schemas.api import (
 from app.schemas.location import ResolvedLocation
 from app.schemas.query import NormalizedQuery
 from app.services import location_resolver, session_router
+from app.services.auth import key_scope, verify_api_key
 from app.services.cache import weather_cache
 from app.services.evidence_store import evidence_store
 from app.services.guardrail import check_question_fast
@@ -54,6 +55,7 @@ from app.storage import memory_store
 configure_logging()
 logger = logging.getLogger(__name__)
 _rate_limiter = RateLimiter(settings.rate_limit_per_minute, settings.rate_limit_per_day)
+_UNGATED_PATHS = {"/", "/health", "/api/v1/health"}
 
 
 @asynccontextmanager
@@ -81,7 +83,15 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > settings.request_max_bytes:
             return _envelope(413, "REQUEST_TOO_LARGE", "Request exceeds configured size limit", request_id)
-        if settings.rate_limit_enabled and request.url.path not in {"/", "/health", "/api/v1/health"}:
+        if settings.api_keys and request.url.path not in _UNGATED_PATHS:
+            matched_key = verify_api_key(request.headers.get("Authorization"))
+            if matched_key is None:
+                client = request.client.host if request.client else "unknown"
+                logger.warning("request.auth_failed", extra={"client": client, "path": request.url.path})
+                return _envelope(401, "UNAUTHORIZED", "Missing or invalid API key", request_id,
+                                 headers={"WWW-Authenticate": "Bearer"})
+            request.state.api_key_scope = key_scope(matched_key)
+        if settings.rate_limit_enabled and request.url.path not in _UNGATED_PATHS:
             client = request.client.host if request.client else "unknown"
             retry_after = _rate_limiter.check(client)
             if retry_after is not None:
@@ -98,6 +108,14 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequestIDMiddleware)
 if settings.cors_origins:
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+def _scoped_id(request: Request, raw_id: str) -> str:
+    """Prefixes a client-supplied user_id/session_id with the calling key's scope, so one
+    caller's sloppy or reused id can never read/overwrite another caller's stored state.
+    No-op (raw id, unchanged) when the key gate is off, e.g. in tests/dev."""
+    scope = getattr(request.state, "api_key_scope", None)
+    return f"{scope}:{raw_id}" if scope else raw_id
 
 
 def _error(request: Request, error: WeatherGPTError) -> JSONResponse:
@@ -175,7 +193,7 @@ async def _understand_query(question: str) -> NormalizedQuery | None:
     return normalized
 
 
-async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, Any], list, Any, Any]:
+async def _weather_request(req: QueryRequestV1, request: Request) -> tuple[Any, list, dict[str, Any], list, Any, Any]:
     started = time.monotonic()
     check_question_fast(req.question)
     normalized_query = await _understand_query(req.question)
@@ -187,7 +205,7 @@ async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, An
     cached_context = None
     if (req.session_id and normalized_query is not None and not has_explicit_location
             and settings.follow_up_context_enabled):
-        cached_context = await session_router.evaluate_follow_up(req.session_id, normalized_query)
+        cached_context = await session_router.evaluate_follow_up(_scoped_id(request, req.session_id), normalized_query)
 
     if cached_context is not None:
         location = ResolvedLocation(
@@ -212,7 +230,7 @@ async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, An
             time_text, tz=req.timezone or location.timezone)
 
     if req.session_id and settings.follow_up_context_enabled:
-        await session_router.store_context(req.session_id, location, valid_from, valid_to, horizon, time_confidence)
+        await session_router.store_context(_scoped_id(request, req.session_id), location, valid_from, valid_to, horizon, time_confidence)
 
     plan = build_retrieval_plan(req.question, horizon)
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
@@ -228,7 +246,7 @@ async def _weather_request(req: QueryRequestV1) -> tuple[Any, list, dict[str, An
         wio.agreement.notes = (wio.agreement.notes + " ").strip() + "Some incompatible evidence was rejected."
     profile = dict(req.profile)
     if req.user_id:
-        profile.update({key: value["value"] for key, value in memory_store.get_context(req.user_id).items() if key not in profile})
+        profile.update({key: value["value"] for key, value in memory_store.get_context(_scoped_id(request, req.user_id)).items() if key not in profile})
     decision = None
     if plan.decision_context:
         decision = decide(wio, profile, getattr(req, "decision_type", None) or req.question)
@@ -286,7 +304,7 @@ async def health():
 @app.post("/api/v1/wio/query")
 async def wio_query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
-    wio, evidence, retrieval_status, agents, _, _ = await _weather_request(req)
+    wio, evidence, retrieval_status, agents, _, _ = await _weather_request(req, request)
     return {"wio": wio, "evidence_count": len(evidence), "retrieval": retrieval_status, "agents": agents, "request_id": request.state.request_id}
 
 
@@ -294,7 +312,7 @@ async def wio_query_v1(req: QueryRequestV1, request: Request):
 @app.post("/api/v1/query")
 async def query_v1(req: QueryRequestV1, request: Request):
     _metrics["requests"] += 1
-    wio, _, retrieval_status, agents, _, decision = await _weather_request(req)
+    wio, _, retrieval_status, agents, _, decision = await _weather_request(req, request)
     return {"answer": _synthesize(wio, decision, agents), "wio": wio, "decision": decision, "agents": agents,
             "retrieval": retrieval_status, "request_id": request.state.request_id}
 
@@ -305,7 +323,7 @@ async def query_v1(req: QueryRequestV1, request: Request):
 async def decision_endpoint(req: DecisionRequest, request: Request):
     _metrics["requests"] += 1
     started = time.monotonic()
-    wio, evidence, retrieval_status, agents, profile, result = await _weather_request(req)
+    wio, evidence, retrieval_status, agents, profile, result = await _weather_request(req, request)
     if result is None:
         result = decide(wio, profile, req.decision_type or req.question)
     result.evidence_ids = [item.evidence_id for item in evidence]
@@ -323,28 +341,28 @@ async def get_evidence(evidence_id: str):
 
 @app.post("/context")
 @app.post("/api/v1/context")
-async def post_context(req: ContextRequest):
-    memory_store.upsert_fact(req.user_id, req.fact.fact, req.fact.value, req.fact.confidence, req.fact.source, req.fact.confirmed,
+async def post_context(req: ContextRequest, request: Request):
+    memory_store.upsert_fact(_scoped_id(request, req.user_id), req.fact.fact, req.fact.value, req.fact.confidence, req.fact.source, req.fact.confirmed,
                 req.fact.expiry.isoformat() if req.fact.expiry else None)
     return {"status": "ok", "user_id": req.user_id, "fact": req.fact.fact}
 
 
 @app.post("/feedback")
 @app.post("/api/v1/feedback")
-async def post_feedback(req: FeedbackRequest):
-    memory_store.add_feedback(req.user_id, req.decision_id or "unspecified", "stored with decision", str(req.actual_outcome), req.user_feedback or "")
+async def post_feedback(req: FeedbackRequest, request: Request):
+    memory_store.add_feedback(_scoped_id(request, req.user_id), req.decision_id or "unspecified", "stored with decision", str(req.actual_outcome), req.user_feedback or "")
     return {"status": "recorded"}
 
 
 @app.get("/warnings/active")
-async def active_warnings(location: str, question: str = "warnings today"):
-    wio, _, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)))
+async def active_warnings(request: Request, location: str, question: str = "warnings today"):
+    wio, _, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
     return {"warnings": [wio.official_warning] if wio.official_warning.active else [], "retrieval": retrieval}
 
 
 @app.get("/forecast")
-async def forecast(location: str, question: str = "weather today"):
-    wio, evidence, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)))
+async def forecast(request: Request, location: str, question: str = "weather today"):
+    wio, evidence, retrieval, _, _, _ = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
     return {"wio": wio, "retrieval": retrieval, "evidence_count": len(evidence)}
 
 

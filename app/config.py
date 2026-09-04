@@ -156,6 +156,12 @@ class Settings:
     met_norway_user_agent: str = os.getenv("WEATHERGPT_MET_NORWAY_USER_AGENT", "WeatherGPT/1.0 (weather intelligence backend)")
 
     # API protection
+    # Server-to-server auth: a small, known set of trusted backend callers, not public
+    # accounts — so a static key is config, not a login/JWT subsystem. Empty (unset)
+    # disables the gate, matching every other opt-in feature flag below.
+    api_keys: tuple[str, ...] = tuple(
+        item.strip() for item in os.getenv("WEATHERGPT_API_KEYS", "").split(",") if item.strip()
+    )
     rate_limit_per_minute: int = int(os.getenv("WEATHERGPT_RATE_LIMIT_PER_MINUTE", "30"))
     rate_limit_per_day: int = int(os.getenv("WEATHERGPT_RATE_LIMIT_PER_DAY", "1000"))
     rate_limit_enabled: bool = _flag("WEATHERGPT_RATE_LIMIT_ENABLED", "true")

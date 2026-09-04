@@ -147,10 +147,21 @@ construction (claims are built from the fused panels), not by the reviewer.
 
 ### Next steps
 
-**Top open item, ahead of everything below:** `docs/security-audit-2026-09-03.md` §2.1 —
-`user_id`/`session_id` are unauthenticated free strings; any client can read or overwrite
-another user's stored context facts and hijack their follow-up session. Fix before this
-goes near real users.
+**`docs/security-audit-2026-09-03.md` §2.1 is closed.** `user_id`/`session_id` used to be
+unauthenticated free strings — any client could read or overwrite another user's stored
+context facts or hijack their follow-up session. WeatherGPT is called server-to-server by
+one other team's backend, never by end users directly, so the fix is a static API key
+(`WEATHERGPT_API_KEYS`, `Authorization: Bearer <key>`, checked in `RequestIDMiddleware` —
+`app/services/auth.py`), not a login/JWT/accounts subsystem. Every stored
+`user_id`/`session_id` is additionally namespaced under a hash of the calling key
+(`_scoped_id` in `app/main.py`), so the IDOR is closed at the storage layer too, not just
+the front door: even a sloppy or reused `user_id` on the caller's side can't cross into
+another key's data. The gate is off when `WEATHERGPT_API_KEYS` is unset (dev/test
+default) — must be set before this runs anywhere reachable by anyone but that one caller.
+
+External DB/cache (Postgres/Redis) remains planned future scope for this microservice;
+the interfaces already exist in `app/storage/` but are not yet wired to an external
+provider — it stays on in-process memory + local SQLite for now.
 
 The small LLM tier is now live: `SMALL_LLM_MODEL=gemini-3.1-flash-lite` via Gemini's
 OpenAI-compatible endpoint (config-only, no code change). `gemini-1.5-flash` and
