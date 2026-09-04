@@ -227,10 +227,19 @@ than the Gemini fallback (2-6s) that had been silently absorbing every call unti
 3. **`STORMGLASS_API_KEY`** — the fallback marine adapter is built but not live-verified
    (needs a paid signup key, unlike Open-Meteo Marine's keyless primary). If you get one,
    smoke-test it the same way Geoapify/Open-Meteo Marine were verified this session.
-4. **`big_llm()`** (`app/llm/client.py`) is fully wired (config, chain, fallback) but
-   **nothing calls it** — the "deterministic complexity trigger" that was supposed to wake
-   it was never built. Either build that trigger or stop carrying `BIG_LLM_*` config as if
-   it does something.
+4. **`big_llm()` is now wired — closed 2026-09-05.** `run_explanation_agent`
+   (`app/agents/orchestrator.py`) calls it behind `_requires_big_llm`, a deterministic
+   trigger: fires when fused sources disagree (`wio.disagreements`), or when a RADE
+   decision actually ran and landed below `WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD`
+   (default 0.6 — between RADE's real 0.55 partial-agreement and 0.8 full-agreement
+   values), including a deferred decision (confidence 0). An unconfigured `BIG_LLM_*` is a
+   no-op fallback to the small tier, same convention as every other optional source. Wired
+   to Groq (`qwen/qwen3.6-27b`, same base URL as the small tier), **live-verified**: a
+   disagreement/low-confidence query showed `tier='big'` in the logs, a confident query
+   stayed on `tier='small'`. Also found and fixed live: this model is a reasoning model
+   that inlines a `<think>` block into `content` by default, eating the token budget meant
+   for the answer — `reasoning_format: "hidden"` added to every outbound request in
+   `app/llm/client.py` fixes it.
 5. Security audit items **beyond §2.1/§2.9 remain open** — §2.2 (query-extractor prompt
    injection, assessed low actual impact), §2.3 (Nominatim's per-process throttle is a
    shared cross-tenant bottleneck), §2.5 (prose-grounding regex only catches 4 unit

@@ -64,7 +64,12 @@ async def _post(endpoint: LLMEndpoint, messages: list[dict[str, Any]],
         f"{endpoint.base_url.rstrip('/')}/chat/completions",
         headers=headers,
         json={"model": endpoint.model, "messages": messages,
-              "temperature": temperature, "max_tokens": max_tokens},
+              "temperature": temperature, "max_tokens": max_tokens,
+              # A reasoning-capable model otherwise inlines a <think>...</think> block into
+              # `content`, consuming the token budget meant for the actual answer. Endpoints
+              # that don't recognize this field ignore it, per the OpenAI-compatible spec's
+              # tolerance for unknown request fields.
+              "reasoning_format": "hidden"},
         timeout=settings.llm_timeout_seconds,
     )
     response.raise_for_status()
@@ -118,6 +123,8 @@ async def small_llm(messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
 
 
 async def big_llm(messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
-    """Complex multi-step reasoning only. Woken by a deterministic trigger, never by
-    asking the small model whether it feels out of its depth."""
+    """Complex multi-step reasoning only. Woken by
+    `app.agents.orchestrator._requires_big_llm`'s deterministic trigger (a RADE decision
+    that couldn't resolve confidently, or fused sources that disagree), never by asking the
+    small model whether it feels out of its depth."""
     return await generate("big", messages, **kwargs)

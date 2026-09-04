@@ -9,7 +9,7 @@ from typing import Any
 from app.agents.base import AgentResult, Claim
 from app.agents.verification import check_prose_grounding, verify_claim
 from app.config import settings
-from app.llm.client import DETERMINISTIC, is_configured, small_llm
+from app.llm.client import DETERMINISTIC, Tier, big_llm, is_configured, small_llm
 from app.schemas.ceo import CanonicalEvidenceObject
 
 logger = logging.getLogger(__name__)
@@ -177,13 +177,29 @@ def _panel_evidence_ids(wio) -> list[str]:
                 ids.append(eid)
     return ids
 
+def _requires_big_llm(wio, decision: AgentResult | None) -> bool:
+    """Deterministic complexity trigger for the big LLM tier: fires only when the
+    explanation needs real multi-step reasoning — a RADE decision that could not resolve
+    confidently (a deferred decision always scores confidence 0), or fused sources that
+    disagree. Restating one panel value never needs it. `decision.claims` is checked (not
+    just `decision is not None`) because `run_decision_agent` returns an empty-claims,
+    confidence=0.5 result when RADE never ran at all — that must not look "low confidence".
+    """
+    if wio.disagreements:
+        return True
+    return (decision is not None and bool(decision.claims)
+            and decision.confidence < settings.big_llm_complexity_confidence_threshold)
+
+
 async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") -> AgentResult:
     """The one agent that calls a language model. It explains; it never originates a number.
 
     Everything it writes passes the reviewer's grounding check, and any failure — a dead
     endpoint, an exhausted chain, an empty reply — degrades to the deterministic template.
-    Prose over already-fused panels is a small-tier job; the big tier is woken only by the
-    deterministic complexity trigger, which does not exist yet.
+    Prose over already-fused panels is a small-tier job; the big tier is woken only by
+    `_requires_big_llm`'s deterministic trigger, never by asking the small model whether it
+    feels out of its depth. An unconfigured big tier is a no-op fallback to small, not an
+    error — leaving `BIG_LLM_*` unset must not change behavior.
     """
     start=time.time()
     def _result(claims, status, model=DETERMINISTIC, errors=None) -> AgentResult:
@@ -196,11 +212,13 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     messages=[{"role": "system", "content": _EXPLANATION_SYSTEM.format(
                   lang=lang, max_words=settings.llm_max_words, tone_directive=settings.explanation_tone_directive)},
               {"role": "user", "content": _fact_sheet(wio, decision)}]
-    result=await small_llm(messages, max_tokens=settings.llm_max_words * 4)
+    tier: Tier = "big" if _requires_big_llm(wio, decision) and is_configured("big") else "small"
+    tier_llm = big_llm if tier == "big" else small_llm
+    result=await tier_llm(messages, max_tokens=settings.llm_max_words * 4)
     if not result.available:
         # Never fatal: an unconfigured or unreachable model must not cost the user an answer.
-        return _result([], "success" if not is_configured("small") else "partial",
-                       errors=[] if not is_configured("small") else [f"explanation unavailable: {result.error}"])
+        return _result([], "success" if not is_configured(tier) else "partial",
+                       errors=[] if not is_configured(tier) else [f"explanation unavailable: {result.error}"])
     text=(result.text or "").strip()
     if not text:
         return _result([], "partial", result.tier, ["explanation model returned empty text"])

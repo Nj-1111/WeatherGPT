@@ -132,6 +132,12 @@ class Settings:
         "WEATHERGPT_EXPLANATION_TONE", "clear, neutral, and helpful — not overly casual, not overly formal")
     small_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("SMALL"))
     big_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("BIG"))
+    # Confidence floor below which a RADE decision (including a deferred one, which always
+    # scores 0) is treated as needing real reasoning rather than restating one panel value.
+    # Sits strictly between RADE's two real confidence values (0.55 partial-agreement,
+    # 0.8 full-agreement — app/rade/v2.py) so only the former wakes the big tier.
+    big_llm_complexity_confidence_threshold: float = float(
+        os.getenv("WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD", "0.6"))
 
     # Storage backends. The switch exists so promotion is a config change, not a rewrite;
     # today only the in-process value is implemented and anything else fails loudly at

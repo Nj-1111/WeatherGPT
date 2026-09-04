@@ -49,7 +49,11 @@ that file is the authoritative list. Notable ones:
 
 - `WEATHERGPT_API_KEYS` — server-to-server auth gate (empty = off)
 - `SMALL_LLM_MODEL` / `_BASE_URL` / `_KEY` (+ `_FALLBACK_1_*`) — the guardrail/explanation LLM chain
-- `BIG_LLM_MODEL` / `_BASE_URL` / `_KEY` — **dormant**, nothing calls `big_llm()` yet (see CLAUDE.md)
+- `BIG_LLM_MODEL` / `_BASE_URL` / `_KEY` — woken by `run_explanation_agent`'s deterministic
+  complexity trigger (`app/agents/orchestrator.py:_requires_big_llm`) on a low-confidence/
+  deferred RADE decision or a source disagreement; empty falls back to the small tier
+  (see CLAUDE.md). `WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD` tunes the
+  confidence floor that counts as "low" (default 0.6)
 - `GEOAPIFY_API_KEY` — primary geocoder (empty = falls back to keyless Open-Meteo/Nominatim chain)
 - `STORMGLASS_API_KEY` — fallback marine source (empty = Open-Meteo Marine only)
 - `CAP_FEED_URL` — which CAP alert index feed to poll

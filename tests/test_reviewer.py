@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from app.agents.base import AgentResult, Claim
 from app.agents.orchestrator import (
     run_all_agents,
     run_explanation_agent,
@@ -196,6 +197,58 @@ def test_llm_failure_degrades_to_the_template_answer(monkeypatch):
     explanation = next(a for a in agents if a.agent_name == "explanation")
     assert explanation.status == "partial" and explanation.claims == []
     assert next(a for a in agents if a.agent_name == "reviewer").status == "success"
+
+
+def _with_two_llms(monkeypatch, small_text, big_text):
+    async def fake_small(messages, **kwargs):
+        return LLMResult(tier="small", available=True, text=small_text, model="small-test-model", host="small.test.invalid")
+    async def fake_big(messages, **kwargs):
+        return LLMResult(tier="big", available=True, text=big_text, model="big-test-model", host="big.test.invalid")
+    monkeypatch.setattr("app.agents.orchestrator.small_llm", fake_small)
+    monkeypatch.setattr("app.agents.orchestrator.big_llm", fake_big)
+    monkeypatch.setattr("app.agents.orchestrator.is_configured", lambda tier: True)
+
+
+def _decision_result(confidence):
+    return AgentResult(agent_name="decision", status="success", confidence=confidence,
+                       claims=[Claim(claim="recommended_action", value="spray", evidence_ids=[],
+                                    confidence=confidence, extra={"derivation": {"op": "none"}})])
+
+
+def test_disagreement_wakes_the_big_tier(monkeypatch):
+    _with_two_llms(monkeypatch, "small tier text.", "big tier text.")
+    wio = _wio(_evidence())
+    wio.disagreements = ["sources disagree on precipitation_amount"]
+    result = asyncio.run(run_explanation_agent(wio, None))
+    assert result.model == "big"
+    assert result.claims and result.claims[0].value == "big tier text."
+
+
+def test_low_confidence_decision_wakes_the_big_tier(monkeypatch):
+    _with_two_llms(monkeypatch, "small tier text.", "big tier text.")
+    result = asyncio.run(run_explanation_agent(_wio(_evidence()), _decision_result(0.55)))
+    assert result.model == "big"
+
+
+def test_confident_decision_stays_on_the_small_tier(monkeypatch):
+    _with_two_llms(monkeypatch, "small tier text.", "big tier text.")
+    result = asyncio.run(run_explanation_agent(_wio(_evidence()), _decision_result(0.8)))
+    assert result.model == "small"
+
+
+def test_no_decision_and_no_disagreement_stays_on_the_small_tier(monkeypatch):
+    _with_two_llms(monkeypatch, "small tier text.", "big tier text.")
+    result = asyncio.run(run_explanation_agent(_wio(_evidence()), None))
+    assert result.model == "small"
+
+
+def test_big_tier_unconfigured_falls_back_to_small_even_when_complex(monkeypatch):
+    _with_two_llms(monkeypatch, "small tier text.", "big tier text.")
+    monkeypatch.setattr("app.agents.orchestrator.is_configured", lambda tier: tier == "small")
+    wio = _wio(_evidence())
+    wio.disagreements = ["sources disagree on precipitation_amount"]
+    result = asyncio.run(run_explanation_agent(wio, None))
+    assert result.model == "small"
 
 
 async def _post(path, body):
