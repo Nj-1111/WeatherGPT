@@ -570,34 +570,60 @@ exactly what backed an answer — the audit trail that makes the citations real.
 **Purpose.** Eight agents each derive a structured claim from the already-built WIO and
 evidence, and a **reviewer** gates the result.
 
-Despite the naming, **these are plain Python functions, not LLM calls.** No agent calls
-a model. `model_for(role)` populates a cosmetic `model` field on every result, which
-creates a false impression of multi-model routing in the response.
+Seven of the eight are plain Python functions, not LLM calls. The eighth —
+`run_explanation_agent` — is the one seam where a language model runs, and it writes prose
+only: it never selects a source and never originates a number. `model_for(role)` populates
+a `model` field on every result, which for the seven deterministic agents is decorative.
 
-**The reviewer is the important one.** It walks every claim from every agent and checks
-that each cited `evidence_id` actually exists in the retrieved evidence. If any claim
-cites something absent, `main` turns the whole request into a **503**. This is the
-anti-hallucination gate, and it is the mechanism that will matter most once an LLM is
-wired in.
+**The reviewer is the important one.** For every claim from every agent it checks two
+things:
+
+1. **Citation** — each cited `evidence_id` exists in the retrieved evidence.
+2. **Value** — the number attached to that citation is **recomputed** from the cited
+   evidence and must match. Each claim declares how it was derived in
+   `Claim.extra["derivation"]` (`sum` / `max` / `min` / `identity` / `none`, with the
+   variable, unit and accumulation window it operated on), and
+   `agents/verification.py:verify_claim` re-runs that operation over the CEOs the claim
+   actually cites. Citing real evidence is necessary but no longer sufficient: a claim can
+   cite a genuine record and still be rejected because the value hanging off it is not what
+   that record says.
+
+Free text is checked differently. `check_prose_grounding` extracts every quantity carrying
+a physical unit (mm, %, C, km/h) from the explanation and requires each to match something
+the deterministic pipeline actually produced — a panel value, an evidence value, the peak
+probability — allowing rounding to 0, 1 or 2 places. Bare numerals ("the next 24 hours")
+are not checked: they are prose, not weather claims, and treating them as claims produces
+nothing but false rejections.
+
+**Failure behaviour is deliberately split.** A value that contradicts its evidence, a unit
+mismatch, or an unknown evidence ID is an **error** — `main` turns the request into a 503.
+A claim shape no verifier recognises is a **warning** — recorded, but not a reason to
+reject a response that may be perfectly correct. A future claim type must not start 503ing
+the API just because nobody has written a verifier for it yet.
+
+**The LLM seam.** `run_explanation_agent` is inert unless `settings.llm_enabled`
+(`WEATHERGPT_LLM_ENABLED` plus a `GROQ_API_KEY`). When enabled it sends a **fact sheet**
+built from the WIO panels — never the raw CEO list — to Groq via
+`orchestrator/groq_client.py`, under an `llm_timeout_seconds` outer timeout, and the
+returned prose goes through the grounding check above. Ordering matters: the explanation is
+produced *before* the reviewer runs so the reviewer can check it, but is appended last in
+the returned agent list.
+
+Any LLM failure — timeout, dead key, empty response — degrades to the deterministic
+template answer with `status="partial"`. A third-party model being down must never 503 this
+API. An ungrounded number likewise **suppresses** the explanation rather than failing the
+request (`WEATHERGPT_REVIEWER_PROSE_FAILURE_MODE=fail` makes it fatal instead): the
+guarantee is that no fabricated number reaches the user, not that Groq's worst output can
+take the service down.
 
 **Faults.**
-- **[WRONG]** Agents slice **unranked** evidence arbitrarily — `ceos[:3]`, `hist[:2]`,
-  `obs[:2]`. Their claims can therefore cite different CEOs than the WIO panels shown
-  to the user, from the same request.
-- **[WRONG]** `run_forecast_agent` sets `evidence_ids` to the first three of *all*
-  CEOs, unrelated to the claims it just made. The grounding gate then passes on
-  citations that do not support the claim.
-- **[WRONG]** **RADE runs twice per decision request** — once inside
-  `run_decision_agent` (using `wio.query.raw_text`) and again at the endpoint (using
-  `req.decision_type or req.question`). Duplicate computation on *different inputs*,
-  so the agent's stated recommendation can disagree with the one actually returned.
-- **[RISK]** **The reviewer checks only that evidence IDs exist, never that the claimed
-  value matches the CEO.** Sufficient while agents are deterministic; **not** sufficient
-  the moment an LLM lands. This must be closed before the LLM seam is enabled.
+- **[RISK]** The `identity` and `sum`/`max`/`min` verifiers confirm a claim is arithmetically
+  faithful to the evidence it cites. They cannot confirm it cites the *right* evidence — an
+  agent that cites a real but irrelevant CEO and reports its value honestly still passes.
+- **[TIDY]** `historical` and `observation` agents still slice `[:2]` off class-filtered
+  evidence rather than reading ranked output. Each claim cites its own CEO, so citations are
+  self-consistent and verify cleanly; the selection is merely arbitrary.
 - **[TIDY]** `AgentResult.status` is a bare string; a typo silently becomes a 503.
-- **[TIDY]** `datetime.utcnow()` (deprecated, naive) — the source of all 19 test
-  warnings. `import time, asyncio` on one line; `time.time()` for durations where
-  `monotonic` is correct.
 
 ---
 

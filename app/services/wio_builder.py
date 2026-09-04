@@ -15,6 +15,7 @@ from app.schemas.wio import (
 )
 from app.services.ranker import corroborated, detect_disagreements, rank
 from app.services.spatial_match import covers_query
+from app.services.units import as_kmh
 
 _SEVERITY_ORDER = {"green": 0, "yellow": 1, "orange": 2, "red": 3}
 
@@ -33,11 +34,6 @@ def _as_probability(ev: CanonicalEvidenceObject) -> float:
     if ev.probability is not None:
         return ev.probability
     return (ev.value or 0.0) / 100
-
-
-def _as_kmh(ev: CanonicalEvidenceObject) -> float:
-    value = ev.value or 0.0
-    return value * 3.6 if ev.unit == "m/s" else value
 
 
 def _series(scored, variable: str, source) -> list[CanonicalEvidenceObject]:
@@ -74,6 +70,7 @@ def _rain_panel(scored) -> tuple[dict | None, str]:
     panel = {
         "value_mm": round(total, 2),
         "unit": "mm",
+        "variable": "precipitation_amount",
         "accumulation_hours": window_hours,
         "aggregation": "sum over query window",
         "hours_counted": len(contributing),
@@ -116,7 +113,7 @@ def _temperature_panel(scored) -> dict | None:
         series = _series(scored, variable, source)
         values = [ev.value for ev in series if ev.value is not None]
         return {"min": round(min(values), 1), "max": round(max(values), 1),
-                "unit": series[0].unit or "C", "source": source,
+                "unit": series[0].unit or "C", "source": source, "variable": variable,
                 "aggregation": "range over query window",
                 "evidence_ids": [ev.evidence_id for ev in series]}
     return None
@@ -127,8 +124,9 @@ def _wind_panel(scored) -> dict | None:
     if source is None:
         return None
     series = _series(scored, "wind_speed", source)
-    peak = max(series, key=_as_kmh)
-    return {"value_kmh": round(_as_kmh(peak), 1),
+    peak = max(series, key=as_kmh)
+    return {"value_kmh": round(as_kmh(peak), 1), "variable": "wind_speed",
+            "from_unit": peak.unit, "unit": "km/h",
             "aggregation": "maximum over query window", "source": source,
             "evidence_ids": [peak.evidence_id]}
 

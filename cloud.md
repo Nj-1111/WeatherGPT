@@ -1,10 +1,10 @@
 # cloud.md — Outstanding Work Register
 
-Rewritten 2026-09-03, at the end of the five-phase hardening pass. This records what
-**remains**; `CLAUDE.md` records what was fixed and `docs/SERVICES.md` explains how each
-service works.
+Rewritten 2026-09-03 at the end of the five-phase hardening pass, updated the same day when
+the reviewer gate closed. This records what **remains**; `CLAUDE.md` records what was fixed
+and `docs/SERVICES.md` explains how each service works.
 
-Verified at time of writing: `pytest -q` 107 passed · `ruff check` clean · `mypy app`
+Verified at time of writing: `pytest -q` 120 passed · `ruff check` clean · `mypy app`
 clean · 6 of 8 sources live.
 
 ---
@@ -22,16 +22,30 @@ and rainfall on top.
 
 ---
 
-## 2. Must close before the LLM is wired in
+## 2. Reviewer gate — closed 2026-09-03
 
-**`run_reviewer_agent` checks only that cited evidence IDs exist, never that the claimed
-value matches the CEO** (`app/agents/orchestrator.py`). This is the anti-hallucination
-gate. Existence-only checking is sufficient while every agent is deterministic Python; it
-is **not** sufficient the moment a language model writes a claim. Close this first.
+`run_reviewer_agent` now **recomputes** every claimed value from the evidence the claim
+cites, instead of only checking that the cited IDs exist. Claims declare their derivation in
+`Claim.extra["derivation"]`; `app/agents/verification.py` re-runs it. Citing real evidence is
+no longer enough — the number attached to the citation has to be what that evidence says.
 
-The LLM seam itself is one wire: `run_explanation_agent` returns empty claims, and
-`orchestrator/groq_client.py` is a complete working client with zero callers. The reviewer
-already exempts `claim == "explanation"` — that exemption exists for this.
+LLM prose is checked separately: every quantity carrying a unit must match something the
+deterministic pipeline produced. Failure is split — a contradicted value or unknown ID is a
+503; an unrecognised claim shape is a warning.
+
+The LLM seam is wired, off by default: `run_explanation_agent` calls Groq only when
+`WEATHERGPT_LLM_ENABLED=true` **and** `GROQ_API_KEY` is set, writes prose only, and degrades
+to the deterministic template answer on any failure.
+
+**What this gate still cannot do** — it confirms a claim is arithmetically faithful to the
+evidence it cites, not that it cites the *right* evidence. An agent citing a real but
+irrelevant CEO and reporting its value honestly passes. Relevance is currently guaranteed by
+construction (claims are built from the fused panels), not by the reviewer.
+
+**Not yet verified against a real Groq response.** No valid `GROQ_API_KEY` was available, so
+the success path is covered only by tests with a stubbed client. The failure path was
+verified live against api.groq.com with an invalid key: 401 → explanation `partial`, request
+still 200 on the template answer.
 
 ---
 
@@ -75,6 +89,9 @@ already exempts `claim == "explanation"` — that exemption exists for this.
   to generic User-Agents.
 - Set `WEATHERGPT_LOG_JSON=true` for machine-readable logs.
 - Run **one** uvicorn worker until the caches move to Redis.
+- The LLM explanation is off unless `WEATHERGPT_LLM_ENABLED=true` **and** `GROQ_API_KEY` is
+  set. Leaving it off is a supported configuration: the answer is then entirely template-built.
+- Outbound HTTPS to `api.groq.com` is needed only when the LLM is enabled.
 
 ---
 
