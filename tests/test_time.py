@@ -47,3 +47,26 @@ def test_unknown_timezone_falls_back_instead_of_failing():
 def test_past_date_selects_the_historical_horizon():
     now = datetime(2026, 9, 3, 10, 0, tzinfo=IST)
     assert parse_time_window("2024-01-15", now)[2] == "climate"
+
+
+def test_right_now_is_a_nowcast_window_not_the_whole_day():
+    """'is it raining right now' answered with a 24h sum reports hours already past."""
+    now = datetime(2026, 9, 5, 13, 48, tzinfo=IST)
+    valid_from, valid_to, horizon, _ = parse_time_window("is it raining right now", now=now)
+    assert horizon == "nowcast"
+    assert (valid_to - valid_from) == timedelta(hours=1)
+    assert valid_from.hour == 13 and valid_from.minute == 0, "must cover the current hour"
+
+
+def test_next_n_hours_uses_that_span():
+    now = datetime(2026, 9, 5, 13, 48, tzinfo=IST)
+    valid_from, valid_to, horizon, _ = parse_time_window("how much rain in the next 6 hours", now=now)
+    assert horizon == "nowcast"
+    assert (valid_to - valid_from) == timedelta(hours=6)
+
+
+def test_tomorrow_is_still_a_full_day():
+    now = datetime(2026, 9, 5, 13, 48, tzinfo=IST)
+    valid_from, valid_to, horizon, _ = parse_time_window("will it rain tomorrow", now=now)
+    assert horizon == "short"
+    assert valid_from.hour == 0 and valid_to.hour == 23

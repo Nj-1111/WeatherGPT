@@ -6,6 +6,14 @@ actually works, where it sits in the request flow, and what is wrong with it.
 It assumes no weather-domain background. Read section 1 and 2 first; the rest is
 reference, one file at a time.
 
+Last verified against code 2026-09-05. Where a fault has been fixed since this document
+was first written, it is marked **[FIXED]** rather than deleted, so the document still
+explains *why* the current design looks the way it does — most of the temporal-ranking
+term, the per-timestamp disagreement buckets, and the corroboration rule exist directly
+because of faults recorded here. Faults still open are marked as before; where one is
+already tracked with a finding ID, this document points at `BUG.md`/`AUDIT.md` instead of
+re-describing it, so there is one home per fact.
+
 ---
 
 ## 1. What the system is trying to do
@@ -54,7 +62,9 @@ blended into an arithmetic mean with a model forecast.
 ```
 POST /query
   |
-  1. guardrail            (does not exist yet)
+  1. guardrail            check_question_fast (deterministic reject) then
+                          query_guardrail.run_guardrail (one LLM call -> a strict
+                          GuardrailAction; deterministic fallback if the LLM is down)
   2. location_resolver    "Indore" -> 22.7196, 75.8577
   3. time_parser          "tomorrow" -> 2026-09-03 00:00 .. 23:59
   4. retrieval_planner    which variables, which sources  (deterministic, no LLM)
@@ -78,68 +88,47 @@ over that answer. Nothing after stage 5 ever touches the network.
 
 ---
 
-## 2. A real trace, and the central bug
+## 2. A real trace, and the bug it led to fixing (history — closed 2026-09-02/03)
 
-I ran the real pipeline against the live Open-Meteo API for *"will it rain in Indore
-tomorrow"*. This is not a hypothetical:
+This section originally reported a live defect. It is kept as history because it is the
+best explanation of *why* several mechanisms described later in this document exist —
+the fix motivated by this trace is the largest single correctness change this codebase
+has had. The defect itself is closed; nothing below describes current behavior.
+
+The original trace, against the live Open-Meteo API for *"will it rain in Indore
+tomorrow"*:
 
 ```
 window: 2026-09-03 00:00 IST -> 23:59 IST     horizon: short
 raw CEOs fetched:            288
 after time-window filter:     96
-after semantic gate:          96
 distinct ranking scores:       1   over 96 objects
 ```
 
-The system's answer:
+The system answered **"Rain unlikely (0%)"** for a day whose own fetched evidence held
+2.4mm of rain and a 75% peak probability. Three compounding defects, each fixed:
 
-```
-summary:     "Rain unlikely (0%)."
-rain panel:  value_mm 0.0, probability 0.0, accumulation_hours 1
-             valid_from 2026-09-02T19:00:00Z   <- 00:30 IST, the first hour of the day
-temperature: 23.5 C
-agreement:   full_agreement — "Sources agree on occurrence and magnitude"
-```
+**(a) No aggregation.** `wio_builder` picked exactly one CEO per variable — the first
+decoded, midnight, when it happened to be dry — and reported it as the whole day.
+**Fixed:** `_rain_panel` now sums precipitation across the query window grouped by
+`(source, accumulation_window_hours)`, takes probability as the window's peak, and
+reports temperature as a min-max range.
 
-The actual forecast contained in the very evidence it fetched:
+**(b) Ranking could not tell the hours apart.** All 96 same-source, same-location,
+same-issue-time objects scored identically, so "highest-ranked" degraded to insertion
+order. **Fixed:** `ranker.py` added a temporal term (`rank_weight_temporal`,
+`_temporal_score`) scoring proximity to the query window's centre, so hourly records
+from one source are no longer indistinguishable.
 
-```
-24 hourly precipitation values, day total   2.4 mm
-peak hourly probability                     75 %
-temperature range                     22.5 - 29.2 C
-```
+**(c) `full_agreement` was asserted from one vendor.** The check was `len(scored) >= 2`
+— two *evidence objects*, which the same API call's temperature and rainfall both
+satisfy with no second source involved. RADE reads this field and raised confidence
+0.55 -> 0.8 on corroboration that never happened. **Fixed:** `corroborated()` now
+requires two *distinct sources* reporting the same variable at the same timestamp
+(`group_comparable` buckets by `(variable, window, valid_from)`, excluding ensemble
+members since 2026-09-05 for the same reason — see `AUDIT.md` A1).
 
-**The system said "rain unlikely, 0%" about a day with 2.4mm of rain and a 75% peak
-chance.** Nothing was hallucinated and nothing was mis-fetched. The evidence was
-correct and complete. The fusion stage simply reported *the first hour of the day* —
-midnight, when it was dry — and presented it as the answer for the whole day.
-
-Three separate defects combine to produce this, and each is worth understanding
-because the same pattern recurs elsewhere:
-
-**(a) There is no aggregation.** `wio_builder` picks exactly one CEO per variable and
-reports it. But "will it rain tomorrow" is a question about a 24-hour window, and the
-evidence is 24 separate hourly facts. Rain must be **summed** over the window (2.4mm),
-probability taken as the **maximum or a combination** (75%), temperature reported as a
-**range** (22.5-29.2). Reporting one hour as if it were the day is a category error:
-it answers a question nobody asked.
-
-**(b) Ranking cannot tell the hours apart.** The score is
-`0.4*authority + 0.25*freshness + 0.20*proximity + 0.15*quality`. For 96 objects from
-one source, at one location, issued at one moment, **every one of those terms is
-identical** — all 96 scored exactly 0.88. So "the highest-ranked evidence" is
-meaningless here; the sort is stable, so the winner is simply whichever object was
-decoded first, which is the earliest hour. The ranker has no notion of *when* the
-evidence is valid relative to *when the user asked about*.
-
-**(c) `full_agreement` is asserted from a single source.** The check is
-`len(scored) >= 2` — two or more *evidence objects*. But those two can be the
-temperature and the rainfall from the same API call. Here, 96 objects from one vendor
-produced "Sources agree on occurrence and magnitude". There was no second source to
-agree with. This is not cosmetic: RADE reads this field and raises its confidence from
-0.55 to 0.8 on the strength of corroboration that never happened.
-
-Everything else in this document is smaller than this.
+Full account: `CLAUDE.md`'s "Fusion — the largest correctness fix" session record.
 
 ---
 
@@ -166,10 +155,11 @@ place secrets are read from (the environment, never a file in the repo).
 **Connects.** Read by `retrieval`, `main`, and the location resolver.
 
 **Faults.**
-- **[DEAD]** `source_retries` — defined, and read by nothing. There is no retry logic.
-- **[DEAD]** `enable_llm` — zero readers.
-- **[DEAD]** `database_path` — defined, but `context/store.py` hardcodes
-  `Path("weathergpt.db")` and ignores it.
+- **[FIXED]** `source_retries` is read by `retrieval._fetch_with_retry`; retry with backoff
+  exists, and only genuinely transient failures are retried. Default 1 since 2026-09-05.
+- **[FIXED]** `database_path` is honoured by `context/store.py`.
+- **[DEAD]** `rank_weights_total`, `conversation_max_turns`,
+  `query_understanding_confidence_threshold` — zero readers (`AUDIT.md` A7).
 - **[RISK]** Defaults are evaluated at import, so a config change needs a restart.
   Acceptable, but worth knowing.
 - The values that *should* be here are scattered through the services instead:
@@ -184,8 +174,10 @@ place secrets are read from (the environment, never a file in the repo).
 
 **Purpose.** Shared constants. Currently one: `IST`, the India Standard Time zone.
 
-**Fault.** **[WRONG]** `IST` being a global constant is the root of the timezone
-problem in `time_parser`. See 3.4.
+**Fault.** **[FIXED]** `IST` was a global constant applied to every request regardless
+of location, the root of the timezone problem described in the original 3.4. Windows now
+resolve in the location's own timezone (`zoneinfo`, supplied by the geocoding provider);
+`IST` remains only as the final fallback when a timezone cannot be resolved at all.
 
 ---
 
@@ -231,15 +223,21 @@ silently picking one. Refusing to guess is correct behaviour and it should stay.
 
 **Faults.**
 - **[RISK]** Nominatim's usage policy is a hard maximum of 1 request/second and they
-  block violators by IP. Nothing in the code enforces this. Under load, this is how
-  the EC2 instance gets banned.
-- **[SLOW]** PIN resolution costs two network round trips: India Post gives a district
-  and state but no coordinates, so the district name is then geocoded.
-- **[SLOW]** Every provider call opens a fresh HTTPS connection.
-- **[RISK]** The cache only evicts an expired entry when that exact key is looked up
-  again. Keys never queried again are retained forever.
-- **[TIDY]** `logger.info(..., extra={...})` is called, but no logging is configured
-  anywhere in the app, so none of it is visible.
+  block violators by IP. `NominatimGeocoder` throttles in-process
+  (`nominatim_min_interval_seconds`), but the throttle is class-level state — with
+  multiple uvicorn workers the aggregate can still exceed the policy (`BUG.md` B12).
+- **[SLOW]** PIN resolution still costs two network round trips: India Post gives a
+  district and state but no coordinates, so the district name is then geocoded.
+- **[FIXED]** Every provider call opened a fresh HTTPS connection. All four providers
+  (`geoapify.py`, `nominatim.py`, `open_meteo.py`, `india_post.py`) now share one pooled
+  `httpx` client via `app/adapters/http.py:get_client()`.
+- **[FIXED]** The cache only evicted an expired entry when that exact key was looked up
+  again, so keys never re-queried were retained forever. `LocationCache` now extends the
+  bounded `TTLCache`, which sweeps expired entries on every write and evicts LRU past
+  `location_cache_max_entries`.
+- **[FIXED]** No logging was configured anywhere in the app, so `logger.info(...,
+  extra={...})` calls were invisible. `app/logging_config.py` now configures it, with
+  request-ID propagation via `ContextVar`.
 
 ---
 
@@ -255,27 +253,36 @@ date ("tomorrow" -> now+1d, "day after tomorrow" -> now+2d, an explicit `2026-09
 the horizon from how far ahead the window starts.
 
 The horizon matters because it feeds the retrieval planner: a `climate` horizon adds
-the historical reanalysis sources, a `nowcast` does not.
+the historical reanalysis sources; a `nowcast` does not, and (since 2026-09-05) is also
+what "right now" and "in the next N hours" resolve to — see the fix below.
 
 **Connects.** `main._weather_request` calls it third; output goes to
 `build_retrieval_plan`, to `retrieval` (as the fetch range), and to
 `temporal_align.filter_by_window`.
 
 **Faults.**
-- **[WRONG]** **Every request is parsed in IST**, regardless of where the user asked
-  about. "Tomorrow" for Springfield, Illinois is computed as an Indian calendar day.
-  For any non-Indian location the window is offset by hours and can select the wrong
-  day entirely.
-- **[WRONG]** The month-name loop tests `if mon in text_l` for each of
-  `jan feb mar ... dec`. `"may"` is a substring of **"maybe"**, so *"will it rain
-  tomorrow, maybe?"* is parsed as a date in May.
-- **[WRONG]** Within that branch, `re.search(r"(\d{1,2})")` takes the **first digits
-  anywhere in the sentence** as the day of month. "2 pm on Aug 5" yields August 2nd.
-- **[RISK]** Two bare `except:` clauses. A bare except also swallows `KeyboardInterrupt`
-  and `SystemExit`, which makes a process hard to shut down cleanly.
-- **[DEAD]** `elif "next 3 days" ... : pass` in the first chain — the second chain
-  handles it; the branch does nothing but prevent later branches from being reached.
-- **[DEAD]** `QueryRequestV1` has a `timezone` field. Nothing reads it.
+- **[FIXED]** Every request was parsed in IST regardless of where the user asked about.
+  Windows now resolve in `tz` — the location's own timezone, passed in from
+  `req.timezone or location.timezone` — via `zoneinfo`.
+- **[FIXED]** The month-name loop tested `if mon in text_l` for a bare prefix, so
+  `"may"` matched inside **"maybe"**. `MONTH_PATTERN` now spells out each month
+  explicitly with its own optional suffix (`may` has none to extend into; `mar(?:ch)?`
+  etc.), so the match is exact.
+- **[FIXED]** The day-of-month regex took the first digits anywhere in the sentence, so
+  "2 pm on Aug 5" parsed as August 2nd. `_DAY_MONTH`/`_MONTH_DAY` now require the day to
+  sit immediately next to the month name (`\b(\d{1,2})(?:st|nd|rd|th)?\s+(MONTH)\b`).
+- **[FIXED]** Two bare `except:` clauses — zero remain in this file.
+- **[FIXED]** A dead `elif "next 3 days": pass` duplicated a branch the later chain
+  already handled — the duplicate is gone; `"next 3 days"`/`"next three days"` is
+  matched once.
+- **[FIXED]** `QueryRequestV1.timezone` had zero readers — `main._weather_request` now
+  passes it as `tz=req.timezone or location.timezone` to every `parse_time_window` call.
+- **[ADDED 2026-09-05]** "right now"/"currently"/"abhi" and "next N hours" previously
+  fell through to the whole-day default like every other phrasing — `"is it raining
+  right now"` was answered with a 24-hour sum including hours already past. Both now
+  return a `nowcast` window floored to the top of the current hour
+  (`_NOW_PHRASE`/`_NEXT_HOURS`), so the record covering the asked-about moment is inside
+  the window instead of averaged away by hours before and after it.
 - **[TIDY]** Confidence values (0.9, 0.8, 0.7, 0.6) are magic numbers inline.
 
 ---
@@ -296,17 +303,19 @@ sources, accumulating a `reasons` list so the plan can be audited.
 `retrieval` fans out over; its `decision_context` decides whether RADE runs at all.
 
 **Faults.**
-- **[DEAD]** **`plan.variables` and `plan.evidence_classes` have zero readers in the
-  entire codebase.** The planner carefully decides which variables are needed, and
-  then nothing filters on them. Every adapter returns everything it has. This is why
-  the Indore trace carried 288 objects when the question needed two variables — roughly
-  four times more data than necessary through ranking, gating, fusion and serialization.
-- **[WRONG]** Keyword matching is plain substring, not word-boundary:
-  - `"go"` matches **Goa**, **mango**, **going**, **agro** — a weather question about
-    Goa is classified as a travel decision, which silently changes which sources are
-    fetched and makes RADE produce a recommendation nobody asked for.
-  - `"sea"` matches **season**.
-  - `"fish"`, `"crop"` and others have the same shape of problem.
+- **[FIXED]** `plan.variables`/`plan.evidence_classes` had zero readers — every adapter
+  returned everything it had regardless of what was planned. `retrieval._wanted()` now
+  filters retrieved items to `plan.variables` (warnings pass through unconditionally,
+  governed by `need_warnings` instead).
+- **[FIXED]** Keyword matching was plain substring, so `"go"` matched **Goa**, **mango**,
+  **going**; `"sea"` matched **season**. `has_word()` now matches on word boundaries
+  (`(?<!\w)word(?!\w)`) everywhere in this file.
+- **[FIXED, 2026-09-05]** `CAP` used to be fetched only when a warning keyword or a
+  decision context was present, so `"weather in Kolkata"` returned no mention of a live
+  official warning for that exact district while `"warnings in Kolkata"` did — live
+  Kolkata rain testing hit this directly. `CAP` is now in every plan's base source list
+  alongside `OPEN_METEO`/`MET_NORWAY`; `need_warnings` now only controls whether the
+  warning-*specific* `IMD` source is added on top.
 - **[TIDY]** Hindi keywords are present but there is no language routing yet.
 
 ---
@@ -316,8 +325,9 @@ sources, accumulating a `reasons` list so the plan can be audited.
 **Purpose.** Fetch every planned source at once, cache results, and make sure one dead
 source can never fail the request.
 
-**Mechanism.** `_one()` per source: build source-specific arguments, hash them into a
-cache key, return the cached CEOs on a hit, otherwise call the adapter under
+**Mechanism.** `_one()` per source: build source-specific arguments, filter by
+`plan.variables` (`_wanted`), hash them into a cache key, return the cached CEOs on a
+hit, otherwise call the adapter with retry+backoff under `CircuitBreaker`/
 `asyncio.wait_for`, normalize raw JSON to CEOs via the decoder, cache, return.
 `retrieve()` runs all of these under `asyncio.gather`.
 
@@ -327,24 +337,35 @@ and returns it as data, not as a raised error. A failed source becomes an entry 
 This is exactly right and should be preserved.
 
 **Faults.**
-- **[DEAD]** `_one()` takes a `plan` argument and never reads it.
-- **[SLOW]** **No connection pooling.** Every adapter opens its own
-  `httpx.AsyncClient` per call — a fresh TLS handshake per source per request. On one
-  box this is the single largest avoidable latency.
-- **[RISK]** **No retry.** One transient 502 drops that source from the answer entirely.
-- **[SLOW]** **No circuit breaker.** CAP and IMD are unconfigured and fail every time,
-  yet are re-dialled on every request, each paying a full timeout. The whole `gather`
-  is bounded by the slowest source.
-- **[SLOW]** Timeouts are hardcoded per adapter (8/10/20/30s) *and* wrapped at 20s
-  here, so the 30s ERA5 timeout is unreachable and the effective value is a surprise.
-- **[SLOW]** The cache key rounds coordinates to 4 decimal places — about 11 metres.
-  The underlying source grid is 0.25 degrees, about 27km. Two users in the same city
-  share no cache entry despite being served identical data.
-- **[SLOW]** On a cache hit, every CEO is `model_copy(deep=True)`-ed — hundreds of deep
-  Pydantic clones per request, purely to stamp a cache-metadata field.
-- **[SLOW]** One TTL for everything. Historical reanalysis data, which cannot change,
-  expires after 15 minutes like a live forecast.
-- **[TIDY]** `__import__("datetime").datetime.now(...)` inline instead of an import.
+- **[FIXED]** `_one()` took a `plan` argument and never read it — it now filters
+  returned items to `plan.variables` via `_wanted()`.
+- **[FIXED]** No connection pooling — every adapter opened its own `httpx.AsyncClient`
+  per call. One pooled client (`app/adapters/http.py`) is now shared by every adapter
+  and every location provider.
+- **[FIXED]** No retry — one transient 502 dropped that source entirely.
+  `_fetch_with_retry` now retries with backoff, but only for genuinely transient
+  failures (`_is_retryable`: timeouts, 5xx, 429 — not a 404 or a missing credential).
+- **[FIXED]** No circuit breaker — a permanently unconfigured source paid a full
+  timeout on every single request. `CircuitBreaker` now opens after
+  `circuit_breaker_threshold` consecutive failures and half-opens after
+  `circuit_breaker_reset_seconds`.
+- **[SLOW]** One `source_timeout_seconds` (8s since 2026-09-05) serves both the retrieval
+  wrapper and the shared httpx client, so a per-adapter value above it is unreachable.
+  Worst case per source is now 2 attempts x 8s + backoff = 16.4s, down from 61.2s; the
+  `gather` itself still has no total deadline (`AUDIT.md` A5).
+- **[FIXED]** The cache key rounds coordinates to `cache_key_precision` (2dp, ~1km)
+  against a ~27km source grid, so a whole city shares one entry.
+- **[FIXED]** On a cache hit, every CEO was `model_copy(deep=True)`-ed purely to stamp a
+  cache-metadata field — roughly 288 deep Pydantic clones on the original Indore trace.
+  `retrieval_timestamp` is now stamped once on the source item at fetch time
+  (`item.retrieval_timestamp = item.retrieval_timestamp or retrieved`), not re-cloned
+  per cache hit.
+- **[FIXED]** One TTL served everything, so historical reanalysis data (which cannot
+  change) expired after 15 minutes like a live forecast. `_CACHE_TTL_BY_SOURCE` now
+  gives `ERA5`/`NASA_POWER` `historical_cache_ttl_seconds` (default 86400s) and
+  `CAP`/`IMD` `warning_cache_ttl_seconds` (default 300s).
+- **[FIXED]** `__import__("datetime").datetime.now(...)` inline instead of an import —
+  this file now imports `datetime`/`timezone` normally at the top.
 
 ---
 
@@ -354,42 +375,47 @@ This is exactly right and should be preserved.
 reply into CEOs (`normalize`, usually delegating to a decoder), and how to report its
 own health. The uniform interface is what lets `retrieval` treat all sources alike.
 
-**Registry.** `adapters/registry.py` maps source name to instance:
-OPEN_METEO, ERA5, GEFS, CAP, NASA_POWER, IMD, GFS.
+**Registry.** `adapters/registry.py` maps source name to instance — 10 registered:
+OPEN_METEO, ERA5, GEFS, CAP, NASA_POWER, IMD, GFS, MET_NORWAY, OPEN_METEO_MARINE,
+STORMGLASS.
 
 **The state of the sources today** matters more than the code:
 
 | Source | Authority | State |
 |---|---|---|
-| CAP | 1.00 | **Unconfigured** — no feed URL. Official warnings never enter the system. |
+| CAP | 1.00 | Live and keyless on NDMA's Sachet feed. Retrieved on **every** weather query since 2026-09-05 — gating it on warning keywords hid live alerts. |
 | IMD | 0.95 | **Unconfigured** — no API key. India's own met authority is absent. |
-| GEFS | 0.72 | Live (Open-Meteo ensemble) |
+| MET_NORWAY | 0.75 | Live. Added specifically as an independent vendor — see below. |
+| GEFS | 0.70 | Live. **Not an independent vendor** — it is `ensemble-api.open-meteo.com`, the same provider as `OPEN_METEO`. Its members are excluded from corroboration and disagreement (`ranker.group_comparable`, `AUDIT.md` A1). |
 | OPEN_METEO | 0.70 | Live |
 | GFS | 0.70 | Off — needs the GRIB2 libraries |
+| OPEN_METEO_MARINE | — (marine panel) | Live, keyless. |
 | NASA_POWER | 0.65 | Live |
 | ERA5 | 0.50 | Live (Open-Meteo historical) |
+| STORMGLASS | — (marine fallback) | Keyed, built but never live-verified (needs a paid key). |
 
-**Four of the five live sources are Open-Meteo endpoints.** This is the single most
-important fact about the system's current quality: "sources agree" is being computed
-over what is effectively one vendor. Configuring the CAP feed is the highest-value
-single change available, because CAP carries the highest authority and drives RADE's
-risk escalation, which is currently dead code in practice.
+**[FIXED]** This section originally read "four of the five live sources are Open-Meteo
+endpoints... 'sources agree' is being computed over what is effectively one vendor."
+`MET_NORWAY` was added specifically to close that gap — it is the only forecast source
+independent of Open-Meteo — and `CAP`/`IMD` are official-authority sources, not model
+forecasts, so corroboration is no longer computed over one vendor talking to itself.
+GEFS remains an Open-Meteo endpoint and is excluded from corroboration accordingly.
 
 **Faults.**
-- **[WRONG]** `decoders/imd_json.py:50,65,91` —
-  `coordinates=[record.get("lon", 79.08), record.get("lat", 21.14)]`. Any IMD record
-  missing coordinates is silently stamped with **Nagpur's**. It then passes the
-  semantic gate, scores 0.95 authority, and is ranked by distance to the user using
-  coordinates that are fiction. A user in Chennai can be shown an IMD observation
-  presented as local, with a clean provenance trail hiding it. This is the most
-  dangerous line in the repo.
-- **[WRONG]** `nasa_power.fetch` defaults to `start="20240101", end="20240102"`.
-  Unreachable today because `retrieval` always passes dates, but any future caller
-  that omits them gets two days of January 2024 returned as current evidence.
-- **[RISK]** Health probes hardcode Nagpur and 2024-01-01, so `/health` reports a
-  source "available" based on one probe location.
-- **[RISK]** Bare `except:` in `open_meteo_historical` and `nasa_power`.
-- **[TIDY]** `print()` instead of logging in `grib2_placeholder.py`.
+- **[FIXED]** `decoders/imd_json.py` stamped any record missing coordinates with
+  Nagpur's (`coordinates=[record.get("lon", 79.08), record.get("lat", 21.14)]`), so it
+  passed the semantic gate, scored full IMD authority, and was ranked by distance using
+  fictional coordinates. Records without coordinates are now skipped and logged instead.
+- **[FIXED]** `nasa_power.fetch` defaulted `start`/`end` to `"20240101"`/`"20240102"`.
+  Both are now required parameters with no default.
+- **[TIDY]** Health probes still use a fixed probe location and date
+  (`HEALTH_PROBE_LAT`/`_LON`/`_DATE` in `constants.py`), so `/health` reports a source
+  "available" based on one probe point rather than the caller's location — now at least
+  centralised in one named place instead of scattered per-adapter literals.
+- **[FIXED]** Bare `except:` in `open_meteo_historical` and `nasa_power` — zero bare
+  excepts remain anywhere in `adapters/` or `decoders/`.
+- **[TIDY]** `print()` instead of logging in `grib2_placeholder.py` — low priority; GFS
+  is unavailable in the current deployment regardless (needs `requirements-full.txt`).
 
 ---
 
@@ -405,10 +431,12 @@ normalizes everything to UTC and treats a naive datetime as UTC.
 **Connects.** Called by `main` immediately after retrieval — this is what cut 288
 objects to 96 in the trace. `staleness_hours` is called by `ranker`.
 
-**Faults.**
-- **[RISK]** A CEO with *no* time information at all returns `True` — it is kept
-  unconditionally. Combined with the geometry default below, evidence with neither a
-  known place nor a known time flows through the pipeline scoring well.
+**Faults.** Verified still current 2026-09-05.
+- **[RISK]** A CEO with *no* time information at all (`overlaps()`: no `valid_from`/
+  `valid_to`, no `issued_at`/`observed_at` either) returns `True` — kept unconditionally.
+  Combined with the geometry default in 3.9 (now fixed, see below), evidence with
+  neither a known place nor a known time no longer scores optimistically — the time
+  gap remains open on its own.
 - **[TIDY]** `staleness_hours` returns the magic number `999` for unknown.
 - **[TIDY]** `to_utc(None)` returns `None` while annotated as returning `datetime`.
 
@@ -423,14 +451,17 @@ the proximity term in ranking.
 the CEO geometry.
 
 **Faults.**
-- **[WRONG]** `if geometry is None or coordinates is None: return 0.0`. Zero distance
-  means *exactly at the query point*, which yields the **maximum** proximity score.
-  Evidence whose location is unknown is therefore ranked as though it were perfectly
-  local. The comment says this is for polygon/district evidence "treated as covering",
-  which is defensible for a district warning — but the same branch catches genuinely
-  unlocated data. Combined with the IMD Nagpur default, unlocated evidence is scored
-  optimistically twice over.
-- **[TIDY]** `except Exception: return 9999` swallows the reason.
+- **[FIXED]** Missing geometry used to return `0.0` — exactly-at-the-query-point,
+  the maximum proximity score — conflating "unknown location" with "confirmed local".
+  `distance_to_query` now returns a dedicated `UNKNOWN_DISTANCE_KM` (`inf`) for missing
+  or unparseable geometry, and `ranker.score_evidence` applies
+  `rank_unknown_location_penalty` (default 0.25) instead of the maximum score. `0.0` is
+  now reached only for a genuine polygon-containment match — the query point actually
+  inside a warning polygon — which is correctly local.
+- **[FIXED]** `except Exception: return 9999` swallowed the reason. Now catches the
+  three specific expected failure types (`TypeError, ValueError, IndexError`) and
+  returns the same `UNKNOWN_DISTANCE_KM` sentinel as the missing-geometry case, so
+  "distance unknown" has one representation, not two magic numbers.
 
 ---
 
@@ -453,16 +484,15 @@ defence, not a validation nicety.
 **Connects.** `main` calls `validated_evidence` right after the time filter, stage 7.
 
 **Faults.**
-- **[DEAD]** `REGISTRY = load_registry()` runs at import and loads an optional
-  `variable_registry.yaml` override — and **nothing reads `REGISTRY`**.
-  `validate_semantics` reads `DEFAULT_REGISTRY` directly. The documented extensibility
-  mechanism does nothing at all. (The YAML file also does not exist, so the `yaml`
-  dependency is currently carried for a code path with no effect.)
-- **[SLOW]** `validate_semantics` rescans all ~45 registry entries building a list, for
-  every CEO. That is 96 x 45 wasted comparisons on the Indore query, where a
-  precomputed index by canonical name would be one dictionary lookup.
-- **[TIDY]** Rejection reasons are collected and then flattened by `main` into a single
-  vague sentence, "Some incompatible evidence was rejected." Nothing logs which, or why.
+- **[FIXED]** A `REGISTRY = load_registry()` loaded an optional `variable_registry.yaml`
+  override that nothing read (`validate_semantics` read `DEFAULT_REGISTRY` directly) and
+  the YAML file never existed. Both the dead loader and the `pyyaml` dependency it
+  existed for have been removed.
+- **[FIXED]** `validate_semantics` rescanned all ~45 registry entries per CEO.
+  `_BY_CANONICAL` now precomputes a dict keyed by canonical variable name, so lookup is
+  one dictionary access, not a rescan.
+- **[TIDY]** Rejection reasons are still flattened by `main` into one vague sentence,
+  "Some incompatible evidence was rejected." Nothing logs which, or why.
 
 ---
 
@@ -471,41 +501,45 @@ defence, not a validation nicety.
 **Purpose.** Order evidence by trustworthiness, and flag disagreement between sources.
 
 **Mechanism.**
-`score = 0.4*authority + 0.25*freshness + 0.20*spatial + 0.15*quality`
+`score = 0.35*authority + 0.20*freshness + 0.15*spatial + 0.10*quality + 0.20*temporal`
+(weights configurable, `rank_weight_*` in `config.py`)
 
 - *authority* — a fixed table: CAP 1.0 (official warnings), IMD 0.95 (national met
   authority), down to ERA5 0.5. This encodes "an official warning outranks a model
   forecast", which is the correct instinct.
-- *freshness* — staleness capped at 72h, linearly inverted.
-- *spatial* — `1/(1 + km/50)`, so 50km is the half-decay distance.
+- *freshness* — staleness capped at `rank_staleness_ceiling_hours` (72h), linearly
+  inverted.
+- *spatial* — `1/(1 + km/rank_spatial_half_decay_km)` (50km default half-decay);
+  unknown location gets `rank_unknown_location_penalty` instead of the max score (3.9).
 - *quality* — 1.0 unless the CEO carries a bad quality flag.
-- Warnings get a +0.1 authority boost.
+- *temporal* (added) — proximity of the evidence's valid time to the centre of the
+  query window, so hourly records from one source are no longer indistinguishable.
+- Warnings get a `rank_warning_authority_bonus` (+0.1) boost.
 
-`detect_disagreements` flags when precipitation values spread more than 10mm.
+`detect_disagreements` buckets by `(variable, accumulation_window_hours, valid_from)`
+and flags a spread over `disagreement_threshold_mm`/`_c` **within one bucket** — i.e.
+between distinct sources at the same timestamp and window, never across the window or
+across window lengths.
 
 **Connects.** `wio_builder` calls `rank` before fusing; the ordering decides the
 contents of every WIO panel.
 
 **Faults.**
-- **[WRONG]** **The score cannot distinguish two CEOs from the same source.** Same
-  authority, same location, same issue time, same quality — all identical, as the
-  Indore trace proved (96 objects, 1 distinct score). The ranker is only meaningful
-  *between* sources, but it is being used to choose *within* a source, where it
-  degrades to insertion order. There is no term for how close the evidence is to the
-  time the user actually asked about.
-- **[WRONG]** `detect_disagreements` compares precipitation across the **whole time
-  window**, not between matching timestamps. A dry morning and a wet evening from a
-  single source read as sources disagreeing — spurious `partial_agreement`.
-- **[WRONG]** It also compares values with **different accumulation windows** directly.
-  An IMD 24-hour total against an Open-Meteo 1-hour total will differ by far more than
-  10mm as a matter of arithmetic, not of disagreement. Once IMD is configured this
-  will fire constantly. This is precisely the confusion the CEO schema was designed to
-  prevent, reintroduced at the comparison step.
-- **[TIDY]** Only precipitation is checked; temperature and wind disagreement is never
-  detected.
-- **[TIDY]** The weights, the authority table, 50km, 72h and 10mm are all inline
-  literals.
-- **[TIDY]** `def rank(..., now: datetime = None)` should be `datetime | None`.
+- **[FIXED]** The score could not distinguish two CEOs from the same source — same
+  authority, location, issue time, quality, all identical, as the original Indore trace
+  proved (96 objects, 1 distinct score). Added the temporal term above.
+- **[FIXED]** `detect_disagreements` compared precipitation across the whole time
+  window rather than between matching timestamps, so a dry morning and a wet evening
+  from one source read as sources disagreeing. `group_comparable` now buckets by exact
+  `valid_from`, so only genuinely simultaneous records are compared.
+- **[FIXED]** It also compared values with different accumulation windows directly, so
+  an IMD 24h total against an Open-Meteo 1h total would differ by construction, not
+  disagreement. The accumulation window is now part of the bucket key.
+- **[PARTIALLY FIXED]** Originally only precipitation was checked. `_THRESHOLDS` now
+  also covers `temperature_2m` (`disagreement_threshold_c`); wind still is not.
+- **[FIXED]** The weights, authority table, 50km, 72h and 10mm/3C were inline literals
+  — all now in `config.py` as named, env-overridable settings.
+- **[FIXED]** `def rank(..., now: datetime = None)` — already `datetime | None`.
 
 ---
 
@@ -514,35 +548,49 @@ contents of every WIO panel.
 **Purpose.** The fusion stage. Turn a ranked CEO list into the single WIO the rest of
 the system reads.
 
-**Mechanism.** Rank everything. Walk the ranked list and keep the first CEO seen per
-variable (`best_by_var`). Build the rain, temperature and wind panels from those.
-Collect warning CEOs separately and surface the highest severity. Run disagreement
-detection. Summarize every surviving CEO into the evidence list. Compose a summary
-sentence.
+**Mechanism.** Rank everything (`ranker.rank`). Build the rain panel by grouping the
+best source's precipitation records by `accumulation_window_hours` and summing the
+finest window available over the query range; probability is that source's window peak
+(falling back to the next-best source only if the amount's source reported none).
+Temperature and wind panels take min-max range and window-maximum respectively.
+Collect warning CEOs separately, resolved by polygon-containment first and area-name
+matching second, surfacing the highest severity. Run disagreement detection.
+Summarize every surviving CEO into the evidence list — ensemble members collapse to one
+summary row, individually retrievable by ID. Compose a summary sentence, falling back
+to a temperature/wind/marine-based one when no rain evidence was fetched at all.
 
 **Connects.** Called by `main` at stage 9. Its output is read by every agent, by RADE,
 and by `_synthesize`. **Everything after this point sees only the WIO** — so a mistake
 here is invisible to all downstream validation, including the reviewer agent.
 
-**Faults.** This file holds the most damage in the codebase.
-- **[WRONG]** **No window aggregation** — the central bug from section 2. One hour is
-  reported as the day.
-- **[WRONG]** **`full_agreement` from `len(scored) >= 2`**, where both objects can come
-  from the same source. Claims corroboration that does not exist and raises RADE's
-  confidence from 0.55 to 0.8 on it.
-- **[WRONG]** **Rain amount and rain probability are selected independently.** The
-  amount comes from `best_by_var`; the probability comes from a separate loop that
-  `break`s on the first probability CEO in rank order. Nothing ties them to the same
-  hour. "60% chance of 5mm" can pair Tuesday's probability with Monday's amount.
-- **[WRONG]** **`member_values` pools ensemble members across all timestamps.** An
-  ensemble is many simulations of *the same moment*; pooling across hours smears
-  RADE's probability distribution over time and makes its 5-bin scenarios meaningless.
-- **[SLOW]** The rain panel's `evidence_ids` includes **every** probability CEO in the
-  window (25 in the trace). `wio.evidence` includes **every** surviving CEO (96).
-  Both are serialized into every response.
-- **[TIDY]** Comments restate the code (`# rain`, `# agreement`, `# group by variable`),
-  against the project style rule.
-- **[TIDY]** Summary thresholds (0.6, 0.3) inline.
+**Faults.** This file held the most damage in the codebase; most of it is fixed.
+- **[FIXED]** No window aggregation — one hour reported as the day (the original §2
+  bug). `_rain_panel` now sums over the window, grouped by `(source,
+  accumulation_window_hours)` so a 1h and 6h record are never added together.
+- **[FIXED]** `full_agreement` was asserted from `len(scored) >= 2`, where both objects
+  could come from the same source (or, since ensembles were added, one vendor's own
+  members). `corroborated()` now requires two *distinct* sources at the same timestamp;
+  ensemble members are excluded from the comparison entirely (`AUDIT.md` A1).
+- **[IMPROVED, not fully closed]** Rain amount and probability used to be selected by
+  two fully independent loops with no shared source or time. `_rain_panel` now prefers
+  the probability from the *same* source as the amount (falling back to a different
+  source only when that source reported no probability at all), and both are drawn
+  from the same query window — but the probability is the window's *peak*, not tied to
+  the specific hour the summed amount concentrates in. A "60% chance, 5mm total" can
+  still describe different hours within the same window.
+- **[FIXED]** `member_values` pooled ensemble members across all timestamps, smearing
+  RADE's probability distribution over time. It now selects the single timestamp with
+  the wettest member spread (`wettest = max(members.values(), key=sum)`) — one moment's
+  distribution, not hours pooled together.
+- **[NOW TRACKED AS A8]** The rain panel's probability citation is meant to be the peak
+  probability record but cites `probabilities[:1]` (the first, not the peak) —
+  `GET /evidence/{id}` on that citation can return a different probability than the
+  one stated. See `AUDIT.md` A8; not yet fixed.
+- **[IMPROVED]** `wio.evidence` still includes every surviving non-ensemble CEO, but
+  ensemble members now collapse to one summary row instead of each being serialized —
+  a decision response that carried ~840 evidence entries now carries ~121.
+- **[TIDY]** Summary thresholds (`rain_likely_probability`, `rain_possible_probability`)
+  are now named config settings, not inline literals.
 
 ---
 
@@ -554,14 +602,15 @@ honestly. `EvidenceStore` indexes CEOs by ID so `GET /evidence/{id}` can show th
 exactly what backed an answer — the audit trail that makes the citations real.
 
 **Faults.**
-- **[RISK]** **Neither has any bound or eviction.** `EvidenceStore` grows by roughly
-  one entry per CEO per request — 96 on a single Indore query — and **never removes
-  anything**. `TTLCache` counts a stale entry as a miss but never deletes it. On a
-  long-running EC2 process both grow until the process is killed. This is the clearest
-  production stopper in the repo.
-- **[RISK]** Both are per-process. With multiple uvicorn workers, `GET /evidence/{id}`
-  returns 404 whenever the follow-up request lands on a different worker. Run one
-  worker, or move to Redis.
+- **[FIXED]** Neither had any bound or eviction — `EvidenceStore` grew roughly one entry
+  per CEO per request forever, and `TTLCache` counted a stale entry as a miss but never
+  deleted it. Both are now LRU-bounded (`OrderedDict`, `max_entries`) with expired
+  entries swept on every write, not left to accumulate. `weather_cache`, `location_cache`
+  and `evidence_store` all follow this pattern now.
+- **[RISK, unchanged]** Both are still per-process. With multiple uvicorn workers,
+  `GET /evidence/{id}` returns 404 whenever the follow-up request lands on a different
+  worker. Run one worker until these move to a shared backend (`app/storage/base.py`
+  exists to make that a config change) — recorded as an accepted trade, not scheduled.
 
 ---
 
@@ -601,13 +650,23 @@ A claim shape no verifier recognises is a **warning** — recorded, but not a re
 reject a response that may be perfectly correct. A future claim type must not start 503ing
 the API just because nobody has written a verifier for it yet.
 
-**The LLM seam.** `run_explanation_agent` is inert unless `settings.llm_enabled`
-(`WEATHERGPT_LLM_ENABLED` plus a `GROQ_API_KEY`). When enabled it sends a **fact sheet**
-built from the WIO panels — never the raw CEO list — to Groq via
-`orchestrator/groq_client.py`, under an `llm_timeout_seconds` outer timeout, and the
-returned prose goes through the grounding check above. Ordering matters: the explanation is
-produced *before* the reviewer runs so the reviewer can check it, but is appended last in
-the returned agent list.
+**The LLM seam — rewritten since this section was first drafted.** There is no
+Groq-specific `groq_client.py` any more. `app/llm/client.py` is a provider-agnostic,
+two-tier gateway (`small_llm`/`big_llm`): each tier is an ordered chain of
+OpenAI-compatible endpoints (`{TIER}_LLM_MODEL`/`_BASE_URL`/`_KEY` plus numbered
+fallbacks), tried in order on failure, and no provider name appears in code — a
+provider is only ever a base URL and a model string from the environment. Inert unless
+`LLM_ENABLED=true` and a tier's chain is non-empty.
+
+`run_explanation_agent` sends a **fact sheet** built from the WIO panels (never the raw
+question text since 2026-09-05 — see `_fact_sheet`'s `Intent:` line, `AUDIT.md` A6) to
+the small tier by default. It escalates to the big tier only via
+`_requires_big_llm`'s deterministic trigger — fused sources disagree, or a RADE decision
+ran and landed below `big_llm_complexity_confidence_threshold` — never by asking the
+small model whether it feels out of its depth. The returned prose goes through the
+grounding check above. Ordering matters: the explanation is produced *before* the
+reviewer runs so the reviewer can check it, but is appended last in the returned agent
+list.
 
 Any LLM failure — timeout, dead key, empty response — degrades to the deterministic
 template answer with `status="partial"`. A third-party model being down must never 503 this
@@ -617,12 +676,15 @@ guarantee is that no fabricated number reaches the user, not that Groq's worst o
 take the service down.
 
 **Faults.**
-- **[RISK]** The `identity` and `sum`/`max`/`min` verifiers confirm a claim is arithmetically
-  faithful to the evidence it cites. They cannot confirm it cites the *right* evidence — an
-  agent that cites a real but irrelevant CEO and reports its value honestly still passes.
-- **[TIDY]** `historical` and `observation` agents still slice `[:2]` off class-filtered
-  evidence rather than reading ranked output. Each claim cites its own CEO, so citations are
-  self-consistent and verify cleanly; the selection is merely arbitrary.
+- **[RISK, unchanged — an acknowledged limit, not an oversight]** The `identity` and
+  `sum`/`max`/`min` verifiers confirm a claim is arithmetically faithful to the evidence
+  it cites. They cannot confirm it cites the *right* evidence — an agent that cites a
+  real but irrelevant CEO and reports its value honestly still passes. `CLAUDE.md`
+  records this as "relevance is guaranteed by construction, not by the reviewer."
+- **[BY DESIGN, not a fault]** `historical` and `observation` agents still slice `[:2]`
+  off class-filtered evidence rather than reading ranked output. Each claim cites its
+  own CEO, so citations stay self-consistent; documented in `BUG.md`'s "Not bugs" as an
+  accepted, arbitrary-but-safe selection.
 - **[TIDY]** `AgentResult.status` is a bare string; a typo silently becomes a 503.
 
 ---
@@ -644,16 +706,23 @@ forced to maximum aversion when an orange or red official warning is active.
 guessing, and never fabricates a probability. That instinct is correct and rare.
 
 **Faults.**
-- **[WRONG]** `_domain()` falls through to `"travel"`. An unmatched decision question
-  silently receives travel-policy utilities instead of deferring — the one place the
-  file abandons its own "defer rather than guess" principle.
-- **[WRONG]** `_domain` matches keywords against `f"{context} {user_context}"` — the
-  user's whole context dictionary stringified. A stored user fact containing "crop"
-  flips the decision domain for an unrelated question.
-- **[RISK]** The warning-driven risk escalation is dead in practice, because CAP is
-  unconfigured and `official_warning.active` is permanently `False`.
-- **[TIDY]** Utility tables and scenario bin edges are inline literals. Defensible as
-  policy, but they are exactly the kind of value that should be tunable data.
+- **[FIXED]** `_domain()` used to fall through to `"travel"` on an unmatched decision
+  question, silently applying travel-policy utilities instead of deferring. It now
+  returns `None` on no match, and `decide()` returns `defer_decision` when `domain is
+  None` — verified by direct read of both functions 2026-09-05.
+- **[FIXED]** `_domain` matched keywords against the user's whole context dictionary
+  stringified, so a stored fact containing "crop" flipped the domain of an unrelated
+  question. It now takes only `context: str` (the decision-context text) — the
+  docstring records this was deliberate.
+- **[FIXED]** The warning-driven risk escalation was dead in practice while CAP was
+  unconfigured. **Live-verified working 2026-09-05**: a real Kolkata thunderstorm
+  warning produced `risk_lambda = max(risk_lambda, 1.0)` and a `delay` recommendation
+  with the rationale "Risk aversion increased because an official high-severity warning
+  is active."
+- **[BY DESIGN, not a fault]** Utility tables and scenario bin edges are inline
+  literals. `config.py`'s own stated principle: domain reference data (authority table,
+  variable registry, RADE's utility tables) deliberately stays with the code that owns
+  it, distinct from tunable scalars.
 
 ---
 
@@ -668,78 +737,80 @@ one consistent JSON error envelope. `_weather_request` executes stages 2-10 in o
 raises 503 if the reviewer failed. `_synthesize` builds the answer string from templates.
 
 **Faults.**
-- **[RISK]** **No rate limiting and no auth.** An open port is an open proxy to the
-  upstream weather APIs under our IP. Nominatim and NOMADS both enforce fair use and
-  will block.
-- **[RISK]** **No input guardrail.** Any question at all reaches location resolution and
-  triggers real upstream network calls. There is nothing to reject junk, off-topic,
-  abusive or injection-shaped input before it costs money and quota.
-- **[RISK]** The catch-all handler **discards the exception**. Every 500 is
-  unattributable, and there is no logging configured to have caught it anyway.
-- **[RISK]** `int(request.headers["content-length"])` on a client-supplied header with
-  no guard — a malformed value raises inside middleware, where the exception handlers
-  cannot format it.
-- **[WRONG]** `next(r for r in agents if r.agent_name == "reviewer")` raises
-  `StopIteration` if the reviewer is ever absent, which surfaces as an opaque 500.
-- **[SLOW]** `_synthesize` appends **every** evidence ID to the answer sentence —
-  hundreds of UUIDs embedded in prose meant for a human.
-- **[DEAD]** `_weather_request` takes `request_id` and never uses it. Two callers pass
-  the literal strings `"warnings"` and `"forecast"` for it.
-- **[TIDY]** `/health` reports `models.runtime_loading`, describing a local model that
-  no longer exists, and uses an inline `__import__("os")`.
-- **[TIDY]** `_error` increments the error metric for ordinary 404s and 409s.
+- **[FIXED]** No rate limiting and no auth — an open port was an open proxy to the
+  upstream APIs under our IP. `RateLimiter` (per-IP, 30/min · 1000/day, `/health`
+  exempt) and an optional `WEATHERGPT_API_KEYS` gate now sit in `RequestIDMiddleware`.
+- **[FIXED]** No input guardrail — any question reached location resolution and
+  triggered real upstream calls. `check_question_fast` (deterministic, zero upstream
+  calls) plus `query_guardrail.run_guardrail` (one LLM call to a strict
+  `GuardrailAction`, cached since 2026-09-05, `AUDIT.md` A4) now run first.
+- **[FIXED]** The catch-all handler discarded the exception. `unhandled_error` now logs
+  it with `logger.exception` (full traceback) before returning the generic 500.
+- **[FIXED]** `int(request.headers["content-length"])` on an unguarded client header
+  could raise inside middleware. Now guarded with `declared.isdigit()` before the cast.
+  (A related but distinct gap remains open: the check trusts `Content-Length` and is
+  bypassable via chunked encoding or an omitted header — `BUG.md` B11.)
+- **[FIXED]** `next(r for r in agents if r.agent_name == "reviewer")` raised
+  `StopIteration` if the reviewer was ever absent. Now `next((...), None)` with an
+  explicit `if reviewer is None or reviewer.status != "success"` check.
+- **[FIXED]** `_synthesize` appended every evidence ID to the answer sentence. Now
+  `wio.evidence[:3]`.
+- **[FIXED]** `_weather_request` took an unused `request_id` parameter — the current
+  signature is `_weather_request(req: QueryRequestV1, request: Request)`, no such
+  parameter exists.
+- **[FIXED]** `/health` reported `models.runtime_loading`, describing a model that no
+  longer exists. It now reports `models.bias_correction` honestly as "not wired;
+  responses use raw uncorrected forecast evidence."
+- **[FIXED]** `_error` incremented the error metric for ordinary 404s/409s. Now only
+  `if error.status_code >= 500`.
 
 ---
 
 ## 4. Cross-cutting
 
-**Speed.** The request is dominated by network I/O, not computation, so the wins are:
-connection pooling, a circuit breaker for dead sources, a coarser cache key, and
-filtering to the planned variables. Rewriting anything in a faster language would save
-milliseconds against 20-second network timeouts — it is not worth a second toolchain.
+**Speed.** The request is still dominated by network I/O, not computation — connection
+pooling, a circuit breaker for dead sources, a coarser cache key, and filtering to
+planned variables are all in place. Rewriting anything in a faster language would save
+milliseconds against network timeouts measured in seconds; not worth a second
+toolchain. Current cold/warm latency: `CLAUDE.md`'s measured-latency table;
+`AUDIT.md` §D for the 2026-09-05 session's changes to it.
 
-**Observability.** No logging is configured anywhere outside the location resolver, and
-that output goes nowhere. In production there would be nothing to diagnose an incident
-with.
+**Observability. [FIXED]** No logging was configured anywhere outside the location
+resolver, and that output went nowhere. `app/logging_config.py` now configures logging
+app-wide with request-ID propagation via `ContextVar`.
 
-**Memory.** Three unbounded dictionaries (`evidence_store`, `weather_cache`,
-`location_cache`) grow for the life of the process.
+**Memory. [FIXED]** Three unbounded dictionaries (`evidence_store`, `weather_cache`,
+`location_cache`) grew for the life of the process. All three are now LRU-bounded with
+expiry swept on write (3.13).
 
-**Determinism.** The pipeline is fully deterministic today, which is a genuine asset:
-the same question with the same evidence gives the same answer, and every number is
-traceable to a source record. Every fix below should preserve that.
+**Determinism.** The deterministic pipeline stages are still fully deterministic — same
+question, same evidence, same answer, every number traceable to a source record. The
+LLM explanation layer (small/big tier) is not: temperature 0.35, and `datetime.now()`
+inside ranking, mean the same question can legitimately get different prose (never
+different numbers) on two runs. Not a defect — the guarantee was always about numbers,
+not wording — but worth stating precisely rather than leaving "fully deterministic" as
+an unqualified claim.
 
 ---
 
-## 5. Decisions I need from you
+## 5. Decisions made
 
-**1. Aggregation semantics — the important one.**
-The system must stop reporting one hour as a whole day. The question is what it should
-report instead for *"will it rain tomorrow"*:
-- **(a)** Rain = **total across the window** (2.4mm), probability = **peak hour** (75%),
-  temperature = **min-max range** (22.5-29.2C). Most informative and matches how a
-  forecast is normally spoken. My recommendation.
-- **(b)** Same totals, but also keep a **worst-hour** panel, so a decision engine can
-  see that 0.5mm falls in one specific hour rather than drizzling all day. More useful
-  for spray/harvest decisions, slightly more complex.
-- **(c)** Keep single-hour selection but pick the hour nearest the middle of the window.
-  Smallest change, still wrong for accumulations.
+The five decisions this document originally asked for were all made and implemented:
 
-**2. What should "sources agree" mean** when only one vendor is reachable? Currently it
-claims full agreement. Options: report `single_source` honestly (my recommendation), or
-report agreement only when two *distinct sources* corroborate the same variable at the
-same timestamp, and `single_source` otherwise.
-
-**3. How strict should the guardrail be?** You asked for very strict. I read that as:
-reject anything that is not a weather question, cap length and complexity, reject
-prompt-injection shapes and abuse, and return a structured 4xx **before** any network
-call. The trade-off is false rejections of unusual but legitimate questions. Should an
-ambiguous input be rejected, or allowed through with reduced source fan-out?
-
-**4. Rate limit numbers.** You said hardcode them. Suggest 30 requests/minute per IP
-and 500/day per IP, tunable by environment variable with those as the defaults. Say if
-you want different numbers.
-
-**5. CAP feed.** Configuring it is the highest-value single change to answer quality —
-it turns official warnings on, and makes RADE's risk escalation real. Do you have a
-feed URL, or should I find the appropriate Indian CAP endpoint?
+1. **Aggregation semantics** — option (a) was chosen: rain = total across the window,
+   probability = window peak, temperature = min-max range. Implemented in
+   `wio_builder._rain_panel`/`_temperature_panel` (3.12).
+2. **"Sources agree" meaning** — the stricter option was chosen: `full_agreement`
+   requires two *distinct* sources corroborating the same variable at the same
+   timestamp; one source alone reports `single_source` (3.11-3.12, `AUDIT.md` A1/A3).
+3. **Guardrail strictness** — built as a two-stage gate: a deterministic
+   `check_question_fast` ahead of any network call, then an LLM-classified
+   `GuardrailAction` (accept-location-only / accept-weather-full / reject / clarify /
+   verify / unsupported-topic) with a deterministic fallback when the LLM is
+   unavailable. See `app/services/guardrail.py` and `query_guardrail.py`.
+4. **Rate limit numbers** — implemented as `rate_limit_per_minute`/`rate_limit_per_day`
+   in `config.py`, defaulting to 30/min as suggested and **1000/day**, not the 500/day
+   originally suggested here — raised during implementation, not a discrepancy to chase.
+5. **CAP feed** — configured, and switched again since (`CAP_FEED_URL` now points at
+   NDMA's Sachet feed, broader than the original IMD-only feed). Since 2026-09-05 it is
+   fetched on every weather query rather than only on a warning keyword (3.5).

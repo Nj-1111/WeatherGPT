@@ -289,3 +289,64 @@ def test_a4_the_month_pattern_has_one_owner():
     from app.services.location_resolver import normalize
     from app.services.time_parser import MONTH_PATTERN
     assert normalize.MONTH_PATTERN is MONTH_PATTERN
+
+
+def test_location_ambiguous_offers_a_conversational_disambiguation(monkeypatch):
+    """LocationAmbiguousError used to dead-end as a flat 409 candidate dump. Now: the
+    message lists numbered candidates, and a follow-up naming one of them (in the same
+    session) resolves the original question instead of erroring again."""
+    kalyani_wb = {"name": "Kalyani", "state": "West Bengal", "district": "Nadia",
+                 "country": "India", "lat": 22.9757, "lon": 88.4337}
+    kalyani_mp = {"name": "Kalyani", "state": "Madhya Pradesh", "district": None,
+                 "country": "India", "lat": 26.02, "lon": 78.23}
+
+    async def fake_resolve(query):
+        from app.schemas.location import ResolvedLocation
+        from app.services.location_resolver import LocationAmbiguousError
+        if query.strip().casefold() == "kalyani":
+            raise LocationAmbiguousError(query, [kalyani_wb, kalyani_mp])
+        return ResolvedLocation(raw=query, lat=kalyani_wb["lat"], lon=kalyani_wb["lon"],
+                                state=kalyani_wb["state"], district=kalyani_wb["district"],
+                                country=kalyani_wb["country"], timezone="Asia/Kolkata",
+                                normalized_name="Kalyani")
+
+    async def fake_retrieve(*args, **kwargs):
+        return [], {"sources": {}, "partial": False}
+
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", fake_resolve)
+    monkeypatch.setattr("app.main.retrieve", fake_retrieve)
+
+    first = asyncio.run(_post({"question": "what's the weather in Kalyani",
+                               "session_id": "sess-kalyani-1"}))
+    assert first.status_code == 409
+    body = first.json()["error"]
+    assert body["code"] == "LOCATION_AMBIGUOUS"
+    assert "1) Kalyani, West Bengal" in body["message"]
+    assert "2) Kalyani, Madhya Pradesh" in body["message"]
+
+    second = asyncio.run(_post({"question": "the one in west bengal",
+                                "session_id": "sess-kalyani-1"}))
+    assert second.status_code == 200, second.text
+    assert second.json()["wio"]["query"]["resolved_location"]["state"] == "West Bengal"
+
+
+def test_location_ambiguous_follow_up_that_matches_nothing_is_treated_as_a_fresh_question(monkeypatch):
+    async def fake_resolve(query):
+        from app.services.location_resolver import LocationAmbiguousError
+        candidates = [{"name": "Kalyani", "state": "West Bengal", "country": "India",
+                      "lat": 22.97, "lon": 88.43},
+                     {"name": "Kalyani", "state": "Madhya Pradesh", "country": "India",
+                      "lat": 26.02, "lon": 78.23}]
+        raise LocationAmbiguousError(query, candidates)
+
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", fake_resolve)
+
+    first = asyncio.run(_post({"question": "weather in Kalyani", "session_id": "sess-kalyani-2"}))
+    assert first.status_code == 409
+
+    second = asyncio.run(_post({"question": "what about tomorrow", "session_id": "sess-kalyani-2"}))
+    # No candidate named West Bengal/Madhya Pradesh/Kalyani in this reply -> the pending
+    # disambiguation is dropped and this is treated as a fresh question (here, one the
+    # deterministic guardrail fallback can't classify either) rather than forcing a guess
+    # at which Kalyani was meant.
+    assert second.status_code != 200

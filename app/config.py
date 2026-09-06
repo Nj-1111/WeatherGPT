@@ -64,8 +64,8 @@ class Settings:
     http_max_connections: int = int(os.getenv("WEATHERGPT_HTTP_MAX_CONNECTIONS", "50"))
     http_max_keepalive: int = int(os.getenv("WEATHERGPT_HTTP_MAX_KEEPALIVE", "20"))
     http_user_agent: str = os.getenv("WEATHERGPT_HTTP_USER_AGENT", "WeatherGPT/1.0 (weather intelligence backend)")
-    source_timeout_seconds: float = float(os.getenv("WEATHERGPT_SOURCE_TIMEOUT_SECONDS", "20"))
-    source_retries: int = int(os.getenv("WEATHERGPT_SOURCE_RETRIES", "2"))
+    source_timeout_seconds: float = float(os.getenv("WEATHERGPT_SOURCE_TIMEOUT_SECONDS", "8"))
+    source_retries: int = int(os.getenv("WEATHERGPT_SOURCE_RETRIES", "1"))
     source_retry_backoff_seconds: float = float(os.getenv("WEATHERGPT_SOURCE_RETRY_BACKOFF_SECONDS", "0.4"))
     # A source that fails this many times in a row is skipped until the reset window
     # elapses, so a permanently dead source stops costing a full timeout per request.
@@ -189,6 +189,11 @@ class Settings:
     guardrail_min_chars: int = int(os.getenv("WEATHERGPT_GUARDRAIL_MIN_CHARS", "3"))
     guardrail_max_chars: int = int(os.getenv("WEATHERGPT_GUARDRAIL_MAX_CHARS", "512"))
     guardrail_max_words: int = int(os.getenv("WEATHERGPT_GUARDRAIL_MAX_WORDS", "60"))
+    # The guardrail's LLM call runs before location resolution on every request and its
+    # classification is deterministic (fixed decision tree, temperature 0), so a repeat of
+    # the same question cannot legitimately reach a different action.
+    guardrail_cache_ttl_seconds: int = int(os.getenv("WEATHERGPT_GUARDRAIL_CACHE_TTL_SECONDS", "3600"))
+    guardrail_cache_max_entries: int = int(os.getenv("WEATHERGPT_GUARDRAIL_CACHE_MAX_ENTRIES", "2048"))
 
     # Query understanding — LLM-first location/time/intent/topic extraction, ahead of
     # geocoding. Mandatory on the request path by product decision; the confidence floor

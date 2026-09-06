@@ -167,3 +167,23 @@ def test_forecast_agent_cites_the_evidence_behind_its_claims():
     rain_claim = next(c for c in result.claims if c.claim == "precipitation_amount")
     assert rain_claim.value == wio.weather.rain["value_mm"]
     assert set(rain_claim.evidence_ids) == set(wio.weather.rain["evidence_ids"])
+
+
+def test_a_vendors_own_ensemble_is_not_a_second_source():
+    """GEFS rows come from ensemble-api.open-meteo.com — the same vendor as OPEN_METEO.
+    Counting them as corroboration let one vendor agree with itself."""
+    ceos = _hourly_rain([4.0])
+    ceos += [_ceo("precipitation_amount", 4.2, 0, source="GEFS", window=1, member=i) for i in range(30)]
+    assert corroborated(ceos) is False
+    wio = build_wio("should I spray tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.agreement.status == "single_source"
+
+
+def test_ensemble_spread_is_not_a_source_disagreement():
+    """The members span 0-34.8mm, far past the 10mm threshold, while the two real vendors
+    agree to within 0.3mm. The spread is a distribution, not a conflict."""
+    ceos = _hourly_rain([4.0]) + _hourly_rain([4.3], source="MET_NORWAY")
+    ceos += [_ceo("precipitation_amount", i * 1.2, 0, source="GEFS", window=1, member=i) for i in range(30)]
+    assert detect_disagreements(rank(ceos, 22.72, 75.86)) == []
+    wio = build_wio("should I spray tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.agreement.status == "full_agreement"

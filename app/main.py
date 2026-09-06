@@ -33,7 +33,7 @@ from app.schemas.api import (
 )
 from app.schemas.location import ResolvedLocation
 from app.schemas.query import GuardrailAction, GuardrailDecision
-from app.services import location_resolver, session_router
+from app.services import disambiguation, location_resolver, session_router
 from app.services.auth import key_scope, verify_api_key
 from app.services.cache import weather_cache
 from app.services.evidence_store import evidence_store
@@ -54,7 +54,7 @@ from app.services.retrieval import retrieve
 from app.services.semantic_gate import validated_evidence
 from app.services.temporal_align import filter_by_window
 from app.services.time_parser import parse_time_window
-from app.services.wio_builder import build_wio
+from app.services.wio_builder import build_wio, filter_covered_warnings
 from app.storage import memory_store
 
 configure_logging()
@@ -146,7 +146,8 @@ async def unhandled_error(request: Request, exc: Exception):
 
 
 async def _resolve_location(location: LocationInput | None, question: str,
-                            extracted_phrase: str | None = None) -> ResolvedLocation:
+                            extracted_phrase: str | None = None,
+                            session_id: str | None = None) -> ResolvedLocation:
     try:
         # A half-supplied coordinate used to be ignored, and the caller was then told to
         # "provide a city, pincode, or latitude/longitude" — the thing they had just done.
@@ -173,7 +174,13 @@ async def _resolve_location(location: LocationInput | None, question: str,
         if extracted:
             return extracted
     except LocationAmbiguousError as exc:
-        raise WeatherGPTError("LOCATION_AMBIGUOUS", "More than one location matches the request", {"candidates": exc.candidates}, 409) from exc
+        if session_id and settings.follow_up_context_enabled:
+            await session_router.store_pending_disambiguation(session_id, question, exc.candidates)
+        options = "; ".join(
+            f"{i + 1}) {c['name']}" + (f", {c['state']}" if c.get("state") else "")
+            for i, c in enumerate(exc.candidates))
+        message = f'Multiple locations match "{question}". Did you mean: {options}? Reply with the number or the place name.'
+        raise WeatherGPTError("LOCATION_AMBIGUOUS", message, {"candidates": exc.candidates}, 409) from exc
     except LocationNotFoundError as exc:
         raise WeatherGPTError("LOCATION_NOT_FOUND", str(exc), {"raw": exc.raw}, 404) from exc
     raise WeatherGPTError("LOCATION_REQUIRED", "Provide a city, pincode, or latitude/longitude; no location is stored or inferred.", {}, 422)
@@ -192,14 +199,26 @@ async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> 
     """Runs before any location/time/retrieval work. None means disabled — callers fall
     back to the original regex-only, no-topic-gate behavior untouched.
 
-    A pending VERIFY from a previous turn takes priority: if this turn's session has one
-    and the new text reads as a plain affirmation, that confirms the candidate instead of
-    running the guardrail fresh on a bare "yes".
+    A pending disambiguation (picking between LocationAmbiguousError's candidates) takes
+    priority over a pending VERIFY, then a pending VERIFY takes priority over a fresh
+    guardrail run — each is checked and consumed in turn so a session can only ever be
+    mid-way through one conversational follow-up at a time.
     """
     if not settings.query_understanding_enabled:
         return None
     if req.session_id and settings.follow_up_context_enabled:
-        pending = await session_router.consume_pending_verification(_scoped_id(request, req.session_id))
+        scoped = _scoped_id(request, req.session_id)
+        pending_disambiguation = await session_router.consume_pending_disambiguation(scoped)
+        if pending_disambiguation is not None:
+            original_text, candidates = pending_disambiguation
+            matched = await disambiguation.match_candidate(req.question, candidates)
+            if matched is not None:
+                location_str = (matched["name"]
+                                + (f", {matched['state']}" if matched.get("state") else "")
+                                + (f", {matched['country']}" if matched.get("country") else ""))
+                return resolve_confirmed_location(original_text, location_str)
+            # No confident match: drop it and treat this message as a fresh question.
+        pending = await session_router.consume_pending_verification(scoped)
         if pending is not None and has_word(req.question.casefold(), _AFFIRMATION_WORDS):
             original_text, candidate = pending
             return resolve_confirmed_location(original_text, candidate)
@@ -210,6 +229,9 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     started = time.monotonic()
     check_question_fast(req.question)
     guard_decision = await _resolve_guardrail_decision(req, request)
+    # Caller override takes precedence; otherwise use the guardrail's detection of the
+    # question's own language; "en" only if neither is available.
+    effective_lang = req.language or (guard_decision.detected_lang if guard_decision else None) or "en"
 
     if guard_decision is not None and guard_decision.action in _GUARDRAIL_ERROR_CODES:
         if guard_decision.action == GuardrailAction.VERIFY and req.session_id and settings.follow_up_context_enabled:
@@ -222,7 +244,8 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
 
     if guard_decision is not None and guard_decision.action == GuardrailAction.ACCEPT_LOCATION_ONLY:
         # Nothing else runs: no time parsing, no retrieval, no fusion, no agents, no RADE.
-        return await _resolve_location(req.location, req.question, guard_decision.location)
+        return await _resolve_location(req.location, req.question, guard_decision.location,
+                                       session_id=_scoped_id(request, req.session_id) if req.session_id else None)
 
     # guard_decision is None (disabled) or ACCEPT_WEATHER_FULL — the full pipeline, unchanged.
     # An explicit request-level location always wins, exactly as before — the follow-up
@@ -252,7 +275,8 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
         extracted_phrase = guard_decision.location if guard_decision else None
         time_text = (guard_decision.time if guard_decision and guard_decision.time
                     else req.question)
-        location = await _resolve_location(req.location, req.question, extracted_phrase)
+        location = await _resolve_location(req.location, req.question, extracted_phrase,
+                                           session_id=_scoped_id(request, req.session_id) if req.session_id else None)
         valid_from, valid_to, horizon, time_confidence = parse_time_window(
             time_text, tz=req.timezone or location.timezone)
 
@@ -263,8 +287,10 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
     evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))
     evidence, semantic_rejections = validated_evidence(evidence)
+    resolved_location = location.model_dump()
+    evidence = filter_covered_warnings(evidence, resolved_location)
     evidence_store.add_many(evidence)
-    wio = build_wio(req.question, location.model_dump(), valid_from, valid_to, horizon, evidence, lang=req.language)
+    wio = build_wio(req.question, resolved_location, valid_from, valid_to, horizon, evidence, lang=effective_lang)
     wio.query.intent = plan.decision_context or horizon
     wio.query.resolved_location["time_resolution_confidence"] = time_confidence
     wio.query.resolved_location["retrieval_plan"] = plan.model_dump()
@@ -277,7 +303,7 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     decision = None
     if plan.decision_context:
         decision = decide(wio, profile, getattr(req, "decision_type", None) or req.question)
-    agents = await run_all_agents(evidence, wio, profile, req.language, decision)
+    agents = await run_all_agents(evidence, wio, profile, wio.query.lang, decision)
     reviewer = next((result for result in agents if result.agent_name == "reviewer"), None)
     if reviewer is None or reviewer.status != "success":
         errors = reviewer.errors if reviewer else ["reviewer agent did not run"]

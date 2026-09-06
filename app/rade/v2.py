@@ -118,7 +118,10 @@ def decide(wio, user_context: dict[str, Any], decision_context: str = "") -> Dec
         ranked.append(DecisionAlternative(action=action, expected_utility=expected, downside_risk=downside, score=expected - risk_lambda * downside))
     ranked.sort(key=lambda item: item.score, reverse=True)
     best = ranked[0]
-    confidence = 0.8 if wio.agreement.status in {"full_agreement", "single_source"} else 0.55
+    # Kept above WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD (0.6): one source
+    # reporting alone is weaker than two agreeing, but it is not the unresolved case
+    # the big tier exists for.
+    confidence = {"full_agreement": 0.8, "single_source": 0.65}.get(wio.agreement.status, 0.55)
     return DecisionResult(recommended_action=best.action, alternatives=ranked[1:], expected_utility=best.expected_utility,
                           risk=best.downside_risk, confidence=float(confidence),
                           rationale=f"{best.action} has the highest risk-adjusted utility for {domain}; expected utility {best.expected_utility:.1f}, downside risk {best.downside_risk:.1f}.",

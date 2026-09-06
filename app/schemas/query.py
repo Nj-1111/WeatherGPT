@@ -50,6 +50,10 @@ class GuardrailDecision(BaseModel):
     unsupported_topic: str | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     extraction_source: ExtractionSource = "deterministic_fallback"
+    # ISO 639-1 code, a pure function of original_text (LLM report or script detection) —
+    # never of a caller-supplied override. Plain str, not an enum: an unrecognized code
+    # must degrade to English at render time, not fail validation.
+    detected_lang: str = "en"
 
 
 class ResolvedContext(BaseModel):

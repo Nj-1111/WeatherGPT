@@ -10,6 +10,64 @@ The developer working in this repo owns **only the ML / data / training / infere
 
 **Permanently out of scope — do not propose or generate code for these unless explicitly asked:** any Android/mobile client, any dedicated frontend/UI, general backend/product engineering (auth, user accounts, billing, non-inference API surface), voice/TTS/STT, Nginx/Vercel/HF-Space *website* deployment, and CI/CD or release engineering beyond basic version control.
 
+## Coding rules — follow on every change
+
+Merged here from the former `coding_rules.md` (deleted 2026-09-05) so there is one file to
+read. These are binding, not advisory.
+
+### General Principles
+1. Write clean, minimal, production-grade code. No exceptions.
+2. Simplicity over cleverness. Fewer moving parts, fewer files, fewer abstractions.
+3. Every line must justify its existence. If it is not used, delete it.
+4. Optimize for readability first, performance second, brevity third — but never sacrifice performance for style.
+
+### Comments
+5. No unnecessary comments. Code should be self-explanatory through naming and structure.
+6. Only comment non-obvious logic (e.g. algorithmic tricks, external constraints, workarounds).
+7. No commented-out code left in files. Delete dead code instead of disabling it.
+8. No TODO comments left unresolved. Fix it now or track it in an issue tracker, not inline.
+
+### Debugging / Output
+9. No print statements or debug logging left in final code.
+10. Use a proper logging framework only when logging is a real requirement, with appropriate log levels (error, warning, info). No debug-level logs in production paths.
+11. No emojis anywhere in code, comments, commit messages, or logs.
+
+### Imports and Dependencies
+12. Remove all unused imports before finalizing a file.
+13. Remove all unused packages/dependencies from requirements files, package.json, etc.
+14. Do not import an entire module/package when only one function/class is needed, if selective import is supported.
+15. No duplicate or redundant dependencies achieving the same purpose.
+16. Pin dependency versions; do not leave loose/unpinned versions in production.
+
+### Structure and Organization
+17. One clear responsibility per function. One clear responsibility per file/module.
+18. Keep functions short; extract logic when a function exceeds a reasonable single-purpose length.
+19. Group related code logically (models, services, utils, config) — no dumping everything into one file.
+20. Consistent naming convention across the entire project (no mixing camelCase and snake_case in the same language context).
+21. No dead files, no unused functions, no unused variables, no unused classes.
+
+### Performance and Efficiency
+22. Avoid unnecessary loops, nested loops, or repeated computation — cache/memoize where it measurably helps.
+23. Avoid unnecessary object/data copies; prefer in-place or reference operations when safe.
+24. Avoid premature I/O, network, or DB calls inside loops — batch where possible.
+25. Use efficient data structures appropriate to the access pattern (set for membership checks, dict for lookups, etc).
+26. Minimize third-party dependency overhead — do not add a library for something solvable in a few lines.
+27. Lazy-load or defer expensive operations until actually needed.
+
+### Error Handling
+28. Handle errors explicitly; no silent except/catch blocks that swallow exceptions.
+29. Fail fast and clearly — raise meaningful errors, not generic ones.
+
+### Environment / Housekeeping
+30. Delete `__pycache__`, `.pyc`, and other build/cache artifacts after finishing work on a file.
+31. Remove unused virtual environments, unused installed packages, and stale lock file entries after finishing a task.
+32. Keep `.gitignore` updated to prevent cache/build artifacts from being tracked.
+33. No leftover temporary files, test scripts, or scratch files in the final project directory.
+
+### Final Check Before Completion
+34. Re-scan the file: remove unused imports, unused variables, dead code, debug prints, and stray comments.
+35. Confirm the code runs with minimal overhead and no unnecessary dependencies before marking the task done.
+
 ## Session record — 2026-09-02/03 hardening pass
 
 A five-phase audit and hardening pass ran over `app/`. `docs/SERVICES.md` is the
@@ -99,7 +157,7 @@ it only costs on a location's first use.
 
 ### Session record — 2026-09-03, reviewer gate and LLM seam
 
-`cloud.md` §2 is closed. The reviewer no longer takes a claim's value on trust.
+The outstanding-work register's reviewer item is closed. The reviewer no longer takes a claim's value on trust.
 
 **The gate.** Every claim declares how its value was derived in `Claim.extra["derivation"]`
 — `sum` / `max` / `min` / `identity` / `none`, with the variable, unit and accumulation
@@ -149,7 +207,7 @@ construction (claims are built from the fused panels), not by the reviewer.
 
 Closed §2.9 (`/health` unauthenticated 8-way fan-out — now cached, `WEATHERGPT_HEALTH_CACHE_TTL_SECONDS`,
 default 30s, in `app/adapters/registry.py`). Then a spec-driven initiative
-(`CAPABILITY_MAP.md`, per-module `SPEC-*.md` files, `tasks/`) replaced the dead
+(`CAPABILITY_MAP.md`, since-merged per-module specs) replaced the dead
 `is_weather_related` boolean with a real dispatch key.
 
 **The guardrail is now a decision, not a flag.** `app/services/query_guardrail.py`
@@ -200,9 +258,8 @@ falling back to Gemini (which still works, proving the chain's resilience design
 name is the suspect; not yet fixed. See Next steps.
 
 `TUNING_GUIDE.md` (which file to edit for a given customization), `AWS.md` (EC2 deploy —
-Docker + a `weathergpt.service` systemd unit so it survives reboot), `coding_rules.md`
-(general code-quality rules the user asked to be followed strictly going forward, on top
-of the conventions already described in this file) added this session.
+Docker + a `weathergpt.service` systemd unit so it survives reboot) and the coding rules
+(now a section of this file) were added this session.
 
 **Verified:** `pytest -q` 256+ passed (1 pre-existing unrelated failure — small LLM tier
 unconfigured *in the test environment specifically*, not a real bug); `ruff`/`mypy` clean
@@ -266,9 +323,130 @@ ruff check app tests && mypy app             # both clean
 set -a && source .env && set +a && uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
-Read `docs/SERVICES.md` first, then `cloud.md` for what remains, `CAPABILITY_MAP.md` for
-this session's module-by-module build record, and `TUNING_GUIDE.md` for "which file do I
-edit to change X."
+Read `docs/SERVICES.md` first, then this file's outstanding-work register, `BUG.md`,
+`AUDIT.md`, and `TUNING_GUIDE.md` for "which file do I edit to change X."
+
+## Session record — 2026-09-05, hostile audit and the fixes it produced
+
+A pre-production teardown ran over `app/` against the coding rules above. Findings are in
+`AUDIT.md`; what got fixed is below. Every fix was verified by `pytest -q` plus a live run.
+
+**Fusion's agreement signal was saturated by the ensemble.** `ranker.group_comparable`
+bucketed evidence by `(variable, window, valid_from)` without excluding ensemble members, so
+30 GEFS member rows shared a bucket with the deterministic row. Since `GEFS` is
+`ensemble-api.open-meteo.com` — the same vendor as `OPEN_METEO` — one vendor corroborated
+itself, and its own 0-34.8mm spread read as sources disagreeing. Measured before the fix:
+"two vendors agree (4.0 vs 4.3mm)" and "two vendors disagree (4.0 vs 38.0mm)" both produced
+`partial_agreement` / RADE confidence 0.55 / big-LLM-woken — indistinguishable. One line in
+`group_comparable` now skips members; the two cases separate correctly. Mutation-verified.
+
+**RADE's confidence scale did not discriminate.** `rade/v2.py` scored `single_source`
+identically to `full_agreement` (both 0.8), so corroboration bought nothing. Now
+`{full_agreement: 0.8, single_source: 0.65}`, defaulting to 0.55. The 0.65 sits deliberately
+above `WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD` (0.6) — anything at or below it
+would wake the big tier on every single-vendor query, turning a source outage into a cost
+event.
+
+**One slow source stalled every request for 61s.** `source_timeout_seconds` 20 with
+`source_retries` 2 meant 3 attempts per source and no total budget. Now 8 and 1 -> 16.4s
+worst case, changed in `config.py`, `.env` and `.env.example` (the env files pinned the old
+values, so editing config alone would have been inert). `retrieve()`'s fan-out still has no
+total deadline.
+
+**The guardrail LLM ran on every request, uncached.** `run_guardrail` now memoizes on
+casefolded question text in a `TTLCache` (`WEATHERGPT_GUARDRAIL_CACHE_TTL_SECONDS`, 3600).
+Deterministic at temperature 0, so no output changes; ~1.1s off every repeat. A
+`deterministic_fallback` decision is never cached — a degraded read must not outlive the
+outage. `tests/conftest.py` clears the cache between tests, because several reuse one
+question with a different stubbed LLM. **Caveat:** this makes `BUG.md` B3's guardrail
+inconsistency sticky for the TTL rather than per-request.
+
+**The user's raw question reached the explanation model's prompt.** `_fact_sheet` now sends
+`Intent:` (from `wio.query.intent`, a closed set the pipeline derived) instead of
+`Question: {raw_text}`. `check_prose_grounding` only constrains numbers carrying a unit, not
+instructions, so that string was the one steering surface into an answer the user reads.
+
+**Provenance was dropped one layer from the user.** `_evidence_summaries` now forwards
+`provenance.original_source`, so a `GEFS` row visibly reads `Open-Meteo ensemble API`.
+`AUTHORITY["GEFS"]` 0.72 -> 0.70; that half is inert (`_best_source` skips members) and was
+applied for table honesty only.
+
+### Live test against Kolkata, 2026-09-05, during real heavy rain
+
+Retrieval and decoding verified sound: Open-Meteo decodes 24/24 hourly values exactly
+(3.8mm = 3.8mm), MET Norway's 1h and 6h accumulations decode and stay separated, 39 CAP
+documents decoded and the Kolkata alert geo-matched correctly. **The defects are in
+planning and fusion, not retrieval.** Two were fixed on the spot:
+
+- **CAP is now always retrieved** (`retrieval_planner`). It used to be gated on the user
+  saying "warning"/"alert"/"cyclone", so `"weather in Kolkata"` returned no mention of a
+  live yellow thunderstorm warning for that district. An official warning is safety
+  information and must not depend on phrasing.
+- **`"right now"` and `"next N hours"` resolve to nowcast windows** (`time_parser`), floored
+  to the top of the current hour so the current hour's record is inside the window. Both
+  previously resolved to the whole 24-hour calendar day: `"is it raining right now"` was
+  answered with a day total including hours already past.
+
+Still open from that run, recorded in `AUDIT.md`: `full_agreement` is claimed between
+sources whose day totals differ 2.7x (absolute 10mm threshold cannot fire at light-rain
+magnitudes); only the top-ranked source's value is ever reported; there is no observation
+source at all, so "is it raining now" is answered from forecast models without saying so.
+
+## Outstanding work register
+
+Merged here from the former `cloud.md` (deleted 2026-09-05). This is what **remains**; the
+session records above are what was fixed. `BUG.md` is the defect register, `AUDIT.md` the
+2026-09-05 teardown.
+
+### Blocked on credentials
+
+| Source | Missing | Effect |
+|---|---|---|
+| **IMD** (authority 0.95) | `IMD_API_KEY`, `IMD_API_BASE` | India's own met authority absent. The 5 decoder variants in `imd_json.py` have never run against real data. Register at `api.imd.gov.in/public/login.php`; IP whitelisting, so the EC2 elastic IP must exist first. |
+| **GFS/GRIB2** | `cfgrib`/`eccodes`/`xarray` | Adapter self-reports unavailable. Needs `requirements-full.txt`; eccodes needs system libs, and the Docker image still installs only `requirements-api.txt`. |
+| **STORMGLASS** | `STORMGLASS_API_KEY` | Marine fallback unexercised. Primary (`OPEN_METEO_MARINE`, keyless) works. Needs a paid key. |
+
+CAP (authority 1.0) is live and keyless on NDMA's Sachet feed, so IMD is no longer the only
+route to Indian warnings — it would add forecasts, observations and rainfall on top.
+
+### Seams — intentionally empty, do not delete
+
+- **ML bias correction** — `app/services/model_client.py` does not exist. Create per
+  `model.md`; call between the semantic gate and `build_wio` in `main.py`.
+  `CanonicalEvidenceObject` already carries the unused `parent_ids`/`transformation`/
+  `transformation_timestamp`/`algorithm_version` fields for it.
+- **Multilingual** — transliteration in front of `location_resolver/normalize.py` plus
+  language routing in `time_parser`. Hindi keywords already exist in both
+  `retrieval_planner.py` and `time_parser.py`. See `BUG.md` B2/B3.
+
+### Known limitations
+
+- Rate limiting keys on `request.client.host`; behind a proxy every caller shares one
+  bucket. `X-Forwarded-For` is deliberately not trusted.
+- Agreement thresholds are absolute (10mm / 3C). Verified live 2026-09-05: two sources
+  whose day totals differ 2.7x (1.4mm vs 3.8mm) still read as `full_agreement`.
+- `historical`/`observation` agents slice `[:2]` off class-filtered evidence rather than
+  ranked output — arbitrary, but each claim cites its own CEO.
+- Caches and the evidence store are per-process. With multiple workers `GET /evidence/{id}`
+  404s across workers, and each worker pays its own guardrail cache miss. Run one worker.
+- Nominatim is throttled 1 req/s per process; multiple workers can exceed OSM policy.
+
+### Deployment checklist
+
+- `WEATHERGPT_API_KEYS` must be set — empty disables the auth gate.
+- `WEATHERGPT_CORS_ORIGINS` must be set or CORS middleware is never installed.
+- `WEATHERGPT_MET_NORWAY_USER_AGENT` must identify the deployment; generic agents get 403.
+- Outbound HTTPS to the weather/geocoding hosts plus any configured LLM endpoint.
+- `WEATHERGPT_LOG_JSON=true` for machine-readable logs.
+- Run **one** uvicorn worker until the caches move to Redis.
+- The LLM explanation stays off unless `LLM_ENABLED=true` and the small tier is configured.
+  Leaving it off is supported — the answer is then entirely template-built.
+
+### Would another language help?
+
+No. The request is I/O-bound — retrieval and location resolution dominate, compute is under
+1%. The only CPU-bound step is GRIB2 decoding, already native C behind `cfgrib`. Every win
+so far (pooling, caching, circuit breaker, guardrail memoization) was pure Python.
 
 ## Commands
 
@@ -356,16 +534,17 @@ India is preferred by **scoring, not filtering** (`ranking.py`): `log10(populati
 
 ## Known state, don't assume otherwise
 
-- Root-level `architecture.md`, `implementation.md`, `report.md`, `setup.md`, `INSTALL.md`, and ten dated `docs/*_2026-09-01.md`/planning docs described an earlier/aspirational system built by a previous developer (a different machine path, a different Kaggle account, a fully-live Groq multi-agent pipeline, nonexistent endpoints like `GET /plan`, self-reported metrics later found unverified, and — in `report.md` — a partially-visible API key fragment) that did not match current code. Deleted as stale in this session; `README.md` and `docs/ARCHITECTURE.md`/`docs/API.md`/`docs/PROOF_OF_WORK.md` remain the accurate source of truth.
+- Root-level `architecture.md`, `implementation.md`, `report.md`, `setup.md`, `INSTALL.md`, and ten dated `docs/*_2026-09-01.md`/planning docs described an earlier/aspirational system built by a previous developer (a different machine path, a different Kaggle account, a fully-live Groq multi-agent pipeline, nonexistent endpoints like `GET /plan`, self-reported metrics later found unverified, and — in `report.md` — a partially-visible API key fragment) that did not match current code. Deleted as stale in this session; `README.md` and `docs/PROOF_OF_WORK.md` remain the accurate source of truth.
 - No ML metric currently in this repo is independently validated — the real validated baseline numbers (LightGBM/ridge vs. no-correction) that used to be summarized in `docs/PROOF_OF_WORK.md` now live in `model.md`, since ML training itself moved to a separate repo.
 - The old RADE v1 snapshot (`kaggle_kernel/`) and the M1/M3 training kernels (`kaggle_kernel_checker/`, `kaggle_kernel_official/`) were deleted along with M1/M3 themselves — do not reference or try to resurrect them. The bias-correction model (formerly `kaggle_kernel_m3/`, informally "M3") is unrelated to the deleted M3 intent-parser above — don't confuse them if the name resurfaces in old commits.
-- `cloud.md` at the repo root is the live outstanding-work register. It was rewritten at the end of the 2026-09 hardening pass to record what remains, not what was fixed. Read it before proposing work.
+- The outstanding-work register lives in this file (above `## Commands`). Read it before proposing work.
 - `docs/SERVICES.md` explains every service in plain language — mechanism, connections, and known faults. Start there.
 - All ML training code (`training/`, `kaggle_kernel_m3/`) and the Kaggle training guide were removed from this repo as of this change — training now happens in a separate repo. See `model.md` for the full handoff.
-- `CAPABILITY_MAP.md` + per-module `SPEC-*.md` files + `tasks/{plan,todo}.md` track the 2026-09-04 guardrail/marine/geoapify initiative module by module — read `CAPABILITY_MAP.md` first for what's built vs. deferred before starting related work.
+- `CAPABILITY_MAP.md` tracks the 2026-09-04 guardrail/marine/geoapify initiative module by module — read it for what's built vs. deferred. The per-module `SPEC-*.md` files and `tasks/` were merged into it and deleted 2026-09-05.
 - `TUNING_GUIDE.md` maps "I want to change X" to the exact file — check there before searching.
+- `io.md` is the input/output generalization roadmap (language matching, multi-location/multi-time, POI geocoding, new meteorological/astronomical sources) — a living document, update it in the same change as anything it describes, not after.
 - `AWS.md` + `weathergpt.service` are the EC2 deployment path (Docker + systemd, survives reboot).
 
 ## Code style
 
-Match the existing codebase: no unnecessary comments (only ones explaining non-obvious *why*, never restating *what* the code does), no emojis, no debug prints. Don't create new files without a clear reason. `coding_rules.md` at the repo root is a stricter, more detailed rule set the user asked to be followed on every change going forward — it doesn't contradict the above, it's more exhaustive (import hygiene, dead-code removal, performance/data-structure choices, cache-artifact cleanup after each task).
+Match the existing codebase: no unnecessary comments (only ones explaining non-obvious *why*, never restating *what* the code does), no emojis, no debug prints. Don't create new files without a clear reason. The binding rule set is the "Coding rules" section near the top of this file — more exhaustive than this paragraph, and it does not contradict it.

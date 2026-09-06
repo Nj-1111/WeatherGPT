@@ -190,7 +190,7 @@ def _fallback_summary(weather: WIOWeather) -> str:
     return "; ".join(parts) + "." if parts else ""
 
 
-def _place_names(resolved_location: dict) -> tuple[list[str], list[str]]:
+def place_names(resolved_location: dict) -> tuple[list[str], list[str]]:
     """(district/city names, state names) a warning's area text might use for this
     location. Split because a state name alone is weaker evidence — see area_names_query."""
     state = resolved_location.get("state")
@@ -202,7 +202,7 @@ def _place_names(resolved_location: dict) -> tuple[list[str], list[str]]:
             [state] if isinstance(state, str) and state.strip() else [])
 
 
-def _covers(ev, q_lat: float, q_lon: float, place_names: tuple[list[str], list[str]]) -> bool:
+def covers(ev, q_lat: float, q_lon: float, names: tuple[list[str], list[str]]) -> bool:
     """Whether an official warning applies to this user.
 
     Polygon first when there is one. Otherwise fall back to the area description: the
@@ -214,13 +214,24 @@ def _covers(ev, q_lat: float, q_lon: float, place_names: tuple[list[str], list[s
     by_polygon = covers_query(ev, q_lat, q_lon)
     if by_polygon is not None:
         return by_polygon
-    return area_names_query(ev, *place_names)
+    return area_names_query(ev, *names)
+
+
+def filter_covered_warnings(ceos: list[CanonicalEvidenceObject],
+                            resolved_location: dict) -> list[CanonicalEvidenceObject]:
+    """Drop warning-class CEOs that don't cover this location; every other evidence_class
+    passes through untouched. Applied once in main.py, upstream of both build_wio
+    (wio.evidence) and run_all_agents (run_warning_agent's claims) — the one point their
+    shared evidence list passes through, so a single filter fixes both."""
+    q_lat, q_lon = resolved_location["lat"], resolved_location["lon"]
+    names = place_names(resolved_location)
+    return [e for e in ceos if e.evidence_class != "warning" or covers(e, q_lat, q_lon, names)]
 
 
 def _warning(ceos, q_lat: float, q_lon: float,
-             place_names: tuple[list[str], list[str]]) -> WIOWarning:
+             names: tuple[list[str], list[str]]) -> WIOWarning:
     warnings = [e for e in ceos
-                if e.evidence_class == "warning" and _covers(e, q_lat, q_lon, place_names)]
+                if e.evidence_class == "warning" and covers(e, q_lat, q_lon, names)]
     if not warnings:
         return WIOWarning(active=False)
     worst = max(warnings, key=lambda e: _SEVERITY_ORDER.get((e.warning_severity or "yellow").lower(), 1))
@@ -242,6 +253,7 @@ def _evidence_summaries(scored) -> list[EvidenceSummary]:
                         variable=e.variable, value=e.value, unit=e.unit,
                         valid_from=e.valid_from, valid_to=e.valid_to,
                         provenance={"transformations": e.provenance.transformations,
+                                    "original_source": e.provenance.original_source,
                                     "original_unit": e.provenance.original_unit})
         for _, e in scored if e.ensemble_member is None
     ]
@@ -254,10 +266,11 @@ def _evidence_summaries(scored) -> list[EvidenceSummary]:
             evidence_id=members[0].evidence_id, source=members[0].source, evidence_class="forecast",
             variable="rainfall_distribution", value=len(precipitation_members), unit="members",
             valid_from=members[0].valid_from, valid_to=members[-1].valid_to,
-            provenance={"transformations": [
-                f"{len(precipitation_members)} ensemble member records summarised",
-                f"{wet} at or above {settings.measurable_rain_mm} mm",
-                "individual members retrievable via GET /evidence/{id}"]}))
+            provenance={"original_source": members[0].provenance.original_source,
+                        "transformations": [
+                            f"{len(precipitation_members)} ensemble member records summarised",
+                            f"{wet} at or above {settings.measurable_rain_mm} mm",
+                            "individual members retrievable via GET /evidence/{id}"]}))
     return summaries
 
 
@@ -291,5 +304,5 @@ def build_wio(query_text: str, resolved_location: dict, valid_from, valid_to, ho
                      valid_from=valid_from, valid_to=valid_to, intent=horizon, lang=lang)
     return WeatherIntelligenceObject(
         query=query, weather=weather,
-        official_warning=_warning(ceos, q_lat, q_lon, _place_names(resolved_location)),
+        official_warning=_warning(ceos, q_lat, q_lon, place_names(resolved_location)),
         agreement=agreement, evidence=_evidence_summaries(scored), disagreements=disagreements)

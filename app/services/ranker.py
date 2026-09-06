@@ -15,7 +15,7 @@ AUTHORITY = {
     "INSAT": 0.8,
     "MET_NORWAY": 0.75,
     "WRF": 0.75,
-    "GEFS": 0.72,
+    "GEFS": 0.70,
     "GFS": 0.7,
     "OPEN_METEO": 0.7,
     "NASA_POWER": 0.65,
@@ -78,11 +78,13 @@ def group_comparable(evs: list[CanonicalEvidenceObject]) -> dict[tuple, list[Can
 
     The accumulation window is part of the key: a 24-hour rainfall total and a 1-hour one
     differ by arithmetic, not by disagreement, and comparing them is the exact confusion
-    the CEO schema exists to prevent.
+    the CEO schema exists to prevent. Ensemble members are excluded for the same reason:
+    they are one vendor's uncertainty distribution, not independent reports, and letting
+    them into a bucket made that spread read as sources disagreeing.
     """
     buckets: dict[tuple, list[CanonicalEvidenceObject]] = defaultdict(list)
     for ev in evs:
-        if ev.value is None or ev.valid_from is None:
+        if ev.value is None or ev.valid_from is None or ev.ensemble_member is not None:
             continue
         buckets[(ev.variable.value, ev.accumulation_window_hours, to_utc(ev.valid_from))].append(ev)
     return buckets

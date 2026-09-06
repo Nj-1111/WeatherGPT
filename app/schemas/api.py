@@ -31,7 +31,10 @@ class QueryRequestV1(BaseModel):
     # from user_id: one user may run several concurrent conversations, and a follow-up
     # must only ever reuse context from its own conversation.
     session_id: str | None = Field(default=None, max_length=128)
-    language: str = Field(default="en", max_length=16)
+    # None means "not set" — distinct from an explicit "en" override — so the pipeline can
+    # tell "caller wants English" apart from "caller didn't say," and fall back to the
+    # guardrail's detected language only in the latter case (see services/i18n.py).
+    language: str | None = Field(default=None, max_length=16)
     profile: dict[str, Any] = Field(default_factory=dict)
     timezone: str | None = Field(default=None, max_length=64)
 

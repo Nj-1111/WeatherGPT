@@ -38,6 +38,23 @@ def test_llm_accepts_weather_full(monkeypatch):
     assert result.extraction_source == "llm"
 
 
+def test_llm_reports_detected_lang(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Kolkata",
+                            "time": None, "verify_candidate": None, "clarify_reason": None,
+                            "confidence": 0.9, "detected_lang": "bn"})
+    result = asyncio.run(query_guardrail.run_guardrail("কলকাতায় এখন কি বৃষ্টি হচ্ছে"))
+    assert result.detected_lang == "bn"
+
+
+def test_llm_omitting_detected_lang_defaults_to_en(monkeypatch):
+    """Back-compat: every payload in this file predating detected_lang omits the key."""
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Bangalore",
+                            "time": "tomorrow", "verify_candidate": None,
+                            "clarify_reason": None, "confidence": 0.9})
+    result = asyncio.run(query_guardrail.run_guardrail("will it rain in Bangalore tomorrow"))
+    assert result.detected_lang == "en"
+
+
 def test_llm_accepts_location_only(monkeypatch):
     _stub_llm(monkeypatch, {"action": "accept_location_only", "location": "Bangalore",
                             "time": None, "verify_candidate": None,
@@ -127,6 +144,14 @@ def test_llm_unavailable_falls_back_for_weather_question(monkeypatch):
     assert result.action == GuardrailAction.ACCEPT_WEATHER_FULL
     assert result.location == "Indore"
     assert result.extraction_source == "deterministic_fallback"
+
+
+def test_llm_unavailable_falls_back_detected_lang_stays_en(monkeypatch):
+    """The deterministic fallback never attempts language detection (io.md's minimal
+    lang-match scope) — it always carries the field's default."""
+    _stub_llm(monkeypatch, None, available=False)
+    result = asyncio.run(query_guardrail.run_guardrail("কলকাতায় এখন কি বৃষ্টি হচ্ছে"))
+    assert result.detected_lang == "en"
 
 
 def test_llm_unavailable_falls_back_for_off_topic(monkeypatch):

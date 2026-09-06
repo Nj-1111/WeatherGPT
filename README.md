@@ -41,4 +41,34 @@ curl -X POST http://localhost:8001/wio/query \
 
 `GROQ_API_KEY`, `IMD_API_KEY`, and `CAP_FEED_URL` are optional configuration. Secrets are read only from environment variables and must not be committed.
 
-See [architecture](docs/ARCHITECTURE.md), [API notes](docs/API.md), and [verification](docs/VERIFICATION.md).
+## Runtime architecture
+
+`POST /wio/query` resolves a supplied or unambiguous in-text location, deterministically normalizes time, creates a `RetrievalPlan`, retrieves independent sources concurrently, converts source records to CEOs, applies the temporal and semantic gates, persists evidence in the process index, builds a WIO, runs structured agents, and rejects the result when the reviewer finds an invalid evidence ID.
+
+`POST /decision` runs the same path then invokes RADE v2. RADE uses member values only when present; otherwise it uses the source precipitation probability and amount as two explicit scenarios. If those are absent it returns `defer_decision`.
+
+Weather data, decision mathematics, and response language remain separate. The current response synthesis is deterministic; Groq is an optional client utility and is not needed for liveness or readiness.
+
+User context and feedback are user-ID scoped SQLite records. Context is retrieved only for the requesting `user_id`; no endpoint enumerates another user’s data.
+
+## API
+
+All request bodies are Pydantic-validated. Errors use `{error:{code,message,details,request_id}}`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Liveness, readiness, source configuration, cache and model-loading status. |
+| `POST /wio/query` | Validated evidence retrieval and WIO only. |
+| `POST /query` | WIO plus deterministic evidence-grounded synthesis. |
+| `POST /decision`, `POST /rade/advise` | WIO plus RADE v2 result. |
+| `GET /evidence/{id}` | A CEO generated in this running process. |
+| `GET /forecast?location=Nagpur` | Convenience WIO forecast view. |
+| `GET /warnings/active?location=Nagpur` | Active normalized warnings for a location query. |
+| `POST /context`, `POST /feedback` | User-scoped SQLite context and outcome records. |
+| `GET /metrics` | Process metrics and cache hit rate. |
+
+The equivalent `/api/v1/` query, health, decision, context, and feedback routes are available where listed by OpenAPI. Location must be supplied explicitly or occur unambiguously in the question.
+
+See [services](docs/SERVICES.md) for a plain-language walkthrough of every module,
+[CLAUDE.md](CLAUDE.md) for coding rules and the outstanding-work register, [BUG.md](BUG.md)
+for known defects and [AUDIT.md](AUDIT.md) for the 2026-09-05 teardown.

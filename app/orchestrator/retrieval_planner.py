@@ -76,15 +76,16 @@ def build_retrieval_plan(question: str, horizon: str, decision_type: str | None 
         variables = _VARIABLE_FAMILIES["temperature"] + _VARIABLE_FAMILIES["precipitation"]
     variables = list(dict.fromkeys(variables))
 
-    classes: list[EvidenceClassName] = ["forecast"]
-    sources = ["OPEN_METEO", "MET_NORWAY"]
-    reasons = ["forecast requested"]
+    # CAP is always retrieved: an official warning is safety information, and gating it on
+    # the user happening to say "warning" hid a live thunderstorm alert from "weather in X".
+    classes: list[EvidenceClassName] = ["forecast", "warning"]
+    sources = ["OPEN_METEO", "MET_NORWAY", "CAP"]
+    reasons = ["forecast requested", "official warnings always checked"]
 
     need_warnings = has_word(text, _WARNING_WORDS) or decision is not None
     if need_warnings:
-        classes.append("warning")
-        sources.extend(["CAP", "IMD"])
-        reasons.append("official warnings relevant")
+        sources.append("IMD")
+        reasons.append("warning-specific sources requested")
 
     if need_marine:
         sources.extend(["OPEN_METEO_MARINE", "STORMGLASS"])

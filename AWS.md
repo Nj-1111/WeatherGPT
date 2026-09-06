@@ -102,7 +102,7 @@ at `http://<EC2_IP>:8001/openapi.json` (or `/docs` if 8001 is reachable from the
 browser) for the contract. They call `POST /query` with
 `Authorization: Bearer <key>`.
 
-## 8. Operational notes (from `cloud.md` — still true here)
+## 8. Operational notes (see CLAUDE.md's outstanding-work register)
 
 - Run **one** uvicorn worker (already the default — don't add `--workers`) until the
   in-process caches move to Redis; multiple workers would silently split state.

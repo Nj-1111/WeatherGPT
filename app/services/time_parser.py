@@ -22,6 +22,8 @@ _ISO_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _DAY_MONTH = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({MONTH_PATTERN})\b")
 _MONTH_DAY = re.compile(rf"\b({MONTH_PATTERN})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b")
 _IN_HOURS = re.compile(r"\bin (\d+) hours?\b")
+_NEXT_HOURS = re.compile(r"\bnext (\d+)\s*hours?\b")
+_NOW_PHRASE = re.compile(r"\b(?:right now|now|currently|at the moment|at present|abhi)\b")
 
 
 def resolve_timezone(name: str | None) -> tzinfo:
@@ -86,6 +88,17 @@ def parse_time_window(text: str, now: datetime | None = None, tz: tzinfo | str |
     elif in_hours := _IN_HOURS.search(text_l):
         base = now + timedelta(hours=int(in_hours.group(1)))
         return base, base + timedelta(hours=1), "nowcast", 0.95
+
+    # A nowcast question answered with the whole calendar day reports hours that have
+    # already passed and hours after the event ends. Floored to the top of the hour so
+    # the record covering the current hour is inside the window, not just before it.
+    if base == now:
+        hour_start = now.replace(minute=0, second=0, microsecond=0)
+        if next_hours := _NEXT_HOURS.search(text_l):
+            span = min(int(next_hours.group(1)), 48)
+            return hour_start, hour_start + timedelta(hours=span), "nowcast", 0.95
+        if _NOW_PHRASE.search(text_l):
+            return hour_start, hour_start + timedelta(hours=1), "nowcast", 0.95
 
     if "morning" in text_l:
         valid_from = base.replace(hour=6, minute=0, second=0, microsecond=0)

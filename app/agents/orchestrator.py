@@ -141,7 +141,11 @@ _EXPLANATION_SYSTEM = (
 
 
 def _fact_sheet(wio, decision) -> str:
-    lines=[f"Question: {wio.query.raw_text}",
+    # The user's raw question is deliberately not included: it is the one caller-controlled
+    # string that would reach the model, and check_prose_grounding only constrains numbers
+    # carrying a unit, not instructions. query.intent carries the same orientation from a
+    # closed set the pipeline derived (retrieval_planner's decision context, or the horizon).
+    lines=[f"Intent: {wio.query.intent or 'general weather'}",
            f"Location: {wio.query.resolved_location.get('normalized_name') or wio.query.resolved_location.get('raw', 'unknown')}",
            f"Window: {wio.query.valid_from} to {wio.query.valid_to}",
            f"Assessment: {wio.weather.summary or 'no compatible evidence'}"]

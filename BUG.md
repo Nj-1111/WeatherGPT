@@ -1,6 +1,7 @@
 # BUG.md — known defects
 
-Status as of 2026-09-04. Every entry here was verified against real code or live data,
+Status as of 2026-09-05. The 2026-09-05 teardown's findings live in `AUDIT.md`;
+this file stays the defect register. Every entry here was verified against real code or live data,
 not inferred. Where something is a deliberate design trade rather than a defect it is
 listed under "Not bugs" at the end, so this file stays trustworthy.
 
@@ -92,11 +93,44 @@ LOCATION_REQUIRED` (not a fabricated location), `"where is Coimbatore located"` 
 `ACCEPT_LOCATION_ONLY`, 200. 9 new tests in `tests/test_location.py` (46 total, all
 passing), `ruff`/`mypy` clean.
 
+### F6 · P0 · The fabrication guard's end-to-end proof — closed 2026-09-05 (was B1)
+The single test behind this system's central safety claim asserted only
+`status_code == 503` and `error.code == "REVIEW_FAILED"`, and had been failing for a day.
+The stale hardcoded fixture date was the visible symptom; the real defect was that the
+assertion was never coupled to fabrication detection — it could only ever fail from clock
+drift, so it proved nothing about the guard.
+
+Replaced by three cases (`tests/test_reviewer.py`), all driven through `/wio/query`:
+**HONEST** (claim equals the re-derived 8.4mm sum → 200, claim present in the response),
+**FABRICATED** (same evidence, claim tampered to 40.0 → 503), **BOUNDARY** (claim inside
+`reviewer_value_abs_tol` → 200, proving the guard is `math.isclose`, not `==`, and does not
+reject on float noise).
+
+Time coupling fixed at the root: the fixture's evidence timestamps are derived by calling the
+real `parse_time_window` with a frozen `now` (its `now: datetime | None = None` seam already
+existed — production code needed no change), so the evidence always lands inside whatever
+window the query resolves to. No date is hardcoded and no relative-date arithmetic is
+duplicated in the test, making it correct across DST and local-midnight boundaries by
+construction rather than by re-deriving the math.
+
+The FABRICATED case asserts a structural invariant rather than a string: the 503 body has
+exactly one top-level key (`error`) with exactly the fields `code`/`message`/`details`/
+`request_id` — so a refactor that grows an answer surface on the error path fails the test —
+the re-derived 8.4 is present, and 40.0 appears nowhere outside the reviewer's diagnostic
+list. (That the diagnostic echoes it at all is recorded separately as **B18**, not fixed.)
+
+**Mutation-verified**, which is what makes this more than a green check: with
+`main.py:282`'s mismatch→503 branch disabled, FABRICATED fails (`200 != 503`); restored, it
+passes. The test cannot pass while the guard is broken.
+
 ---
 
 ## Open bugs
 
-### B1 · P0 · The reviewer's end-to-end fabrication guard is unverified — the test silently expired
+### B1 · P0 · The reviewer's end-to-end fabrication guard is unverified — CLOSED 2026-09-05
+**Fixed — see F6 above.** Original report retained below for the record.
+
+### B1 (original report) · The test silently expired
 `tests/test_reviewer.py::test_fabricated_value_returns_503_end_to_end` has been failing
 all session and was repeatedly dismissed (including in `CLAUDE.md`) as "environmental —
 small LLM tier unconfigured". **That diagnosis is wrong.** Proven:
@@ -220,9 +254,40 @@ rather than just a boolean. Blast radius is still bounded (a manipulated action 
 fabricate weather values, which come from deterministic fusion), but the finding should be
 re-assessed against the new module rather than assumed closed.
 
+### B18 · P2 · Reviewer mismatch diagnostic echoes both values to the client
+`verification.py:96` builds `f"claim {claim.claim} states {claim.value!r} but {op} of its
+cited evidence is {expected!r}"`, and `main.py:284` forwards the reviewer's error list to the
+client in `error.details.errors`. So a rejected fabrication returns both the fabricated value
+and the re-derived one to the caller, not only to the logs. Not a leak of the number *as
+data* — the 503 body carries no answer/wio surface at all, and the value appears only labeled
+as the rejected claim (this is asserted structurally by
+`test_e2e_fabricated_value_returns_503_and_never_reaches_the_client`). Same class as **B16**;
+resolve the two together — full detail to logs, correlation ID to the client.
+
+### B19 · P3 · The 503 is unambiguous only by accident
+`REVIEW_FAILED` is currently the only 503 in the app (`grep -rn ", 503)" app/` → one hit,
+`main.py:284`), so a reviewer mismatch cannot today be confused with an upstream timeout.
+Nothing enforces that: a second 503 source added later would be indistinguishable at the
+status-code level, and any client branching on `503` alone would silently conflate them.
+Callers should be steered to `error.code`, not the status code.
+
+### B20 · P3 · Tests and test-only deps ship inside the deployed image — and so does `.env`
+Verified, not inferred: **there is no `.dockerignore` file at all**, and `Dockerfile:11` is
+`COPY . .`. The build context is copied wholesale into the image, so `tests/`, `.git/`, and —
+**the part that is not P3** — `.env` with live `GROQ`/`GEOAPIFY` keys are baked into an image
+layer. `requirements-api.txt:16` also installs `pytest==9.1.1` into the runtime image, so the
+fix is a dependency split plus a `.dockerignore`, not one line.
+
+Severity is split deliberately: the tests/pytest half is P3 image hygiene; the `.env`-in-image
+half is a **secrets-at-rest exposure** and should be treated as P1 the moment any image is
+pushed to a registry or shared host (`docker history` / a pulled layer reveals the keys —
+`.gitignore` does not apply to Docker build context). Left unfixed here only because this
+session's scope was B1; it should not wait for a general cleanup pass. Rotate the keys if any
+image built from this tree has already left the machine.
+
 ---
 
-## Dead code (not defects, but violates `coding_rules.md` §21)
+## Dead code (not defects, but violates the coding rules in `CLAUDE.md`, rule 21)
 
 - **`app.storage.session_store`** — a fully built `InMemorySessionStore` from the backend
   factory, imported nowhere. `session_router.py` builds its own two stores instead.
@@ -255,9 +320,10 @@ re-assessed against the new module rather than assumed closed.
 
 ## Suggested order
 
-1. **B1** — restore the reviewer's end-to-end proof (small fix, largest confidence gain).
+1. **B20's `.env`-in-image half** — secrets baked into a Docker layer; cheap to fix, and the
+   only item here with a blast radius outside this repo. (B1 closed 2026-09-05 — see F6.)
 2. **B2** — deterministic, unit-testable half of the multilingual problem.
-3. **B9 / B10 / B11** — the resource/throughput cluster, cheap together.
+3. **B9 / B10 / B11 / B18** — the resource/throughput/leak cluster, cheap together.
 4. **B3 / B6 / B7's general class** — prompt-behaviour cluster; needs a live harness,
    verify as one batch. (B4/B5 closed 2026-09-05 — see F5; B7's specific reported phrasing
    closed alongside it, general class left open same as B3.)

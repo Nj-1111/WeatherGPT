@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
-from app.services.wio_builder import build_wio
+from app.services.wio_builder import build_wio, filter_covered_warnings
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -107,3 +107,42 @@ def test_polygon_still_wins_over_area_text_when_present():
         provenance=Provenance(original_source="CAP", transformations=[]))
     wio = build_wio("should I spray?", NAGPUR, now, now, "short", [ceo], lang="en")
     assert wio.official_warning.active is False
+
+
+def _forecast_ceo():
+    now = datetime.now(timezone.utc)
+    return CanonicalEvidenceObject(
+        source="OPEN_METEO", evidence_class="forecast", variable="precipitation_amount",
+        value=5, unit="mm", statistic="accumulation",
+        geometry=Geometry(type="GridCell", coordinates=[79.08, 21.14]),
+        valid_from=now, valid_to=now, accumulation_window_hours=6,
+        provenance=Provenance(original_source="OPEN_METEO", transformations=[]))
+
+
+def test_filter_covered_warnings_drops_an_unrelated_state_warning():
+    """The bug io.md's warning-agent-geofilter closes: a nationwide CAP feed must not
+    reach either run_warning_agent's claims or wio.evidence for a state the user isn't
+    in. Applied upstream of build_wio, so this proves both surfaces at once."""
+    warning = _polygonless_warning("Brahmaputra, Dhubri, Dhubri, Assam")
+    forecast = _forecast_ceo()
+    filtered = filter_covered_warnings([warning, forecast], NAGPUR)
+    assert filtered == [forecast]
+
+
+def test_filter_covered_warnings_keeps_a_relevant_warning():
+    warning = _polygonless_warning("some parts of Nagpur, Wardha")
+    forecast = _forecast_ceo()
+    filtered = filter_covered_warnings([warning, forecast], NAGPUR)
+    assert filtered == [warning, forecast]
+
+
+def test_filter_covered_warnings_respects_polygon_over_area_text():
+    far_away = [[[88.0, 22.0], [88.5, 22.0], [88.5, 22.5], [88.0, 22.5], [88.0, 22.0]]]
+    now = datetime.now(timezone.utc)
+    ceo = CanonicalEvidenceObject(
+        source="CAP", evidence_class="warning", variable="flood_warning", value=None,
+        raw_value="river warning", statistic="categorical",
+        geometry=Geometry(type="Polygon", coordinates=far_away, reference="Nagpur"),
+        extra={"areas": ["Nagpur"]}, valid_from=now, valid_to=now, warning_severity="orange",
+        provenance=Provenance(original_source="CAP", transformations=[]))
+    assert filter_covered_warnings([ceo], NAGPUR) == []

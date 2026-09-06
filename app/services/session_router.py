@@ -24,6 +24,7 @@ from app.storage.memory import InMemorySessionStore
 
 _store = InMemorySessionStore(settings.follow_up_context_max_entries, settings.follow_up_context_ttl_seconds)
 _verify_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
+_disambiguation_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
 
 
 async def evaluate_follow_up(session_id: str, decision: GuardrailDecision) -> ResolvedContext | None:
@@ -64,6 +65,20 @@ async def consume_pending_verification(session_id: str) -> tuple[str, str] | Non
         return None
     await _verify_store.drop(session_id)
     return payload["original_text"], payload["candidate"]
+
+
+async def store_pending_disambiguation(session_id: str, original_text: str, candidates: list[dict]) -> None:
+    await _disambiguation_store.put(session_id, {"original_text": original_text, "candidates": candidates})
+
+
+async def consume_pending_disambiguation(session_id: str) -> tuple[str, list[dict]] | None:
+    """Reads and clears in one call — a pending disambiguation only ever applies to the
+    single next turn, matched or not."""
+    payload = await _disambiguation_store.get(session_id)
+    if payload is None:
+        return None
+    await _disambiguation_store.drop(session_id)
+    return payload["original_text"], payload["candidates"]
 
 
 def status() -> dict:

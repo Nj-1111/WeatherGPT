@@ -62,6 +62,9 @@ class TTLCache:
         async with self._lock:
             self._entries.pop(key, None)
 
+    def clear(self) -> None:
+        self._entries.clear()
+
     def _evict(self) -> None:
         for key in [key for key, entry in self._entries.items() if entry.stale]:
             del self._entries[key]
