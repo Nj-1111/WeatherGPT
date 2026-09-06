@@ -1,9 +1,4 @@
-"""Matches a user's free-text reply against a short list of already-geocoded location
-candidates, after LocationAmbiguousError. Never geocodes and never invents a place — it
-only selects an index into data the pipeline already produced, or returns None. Degrades
-to a deterministic substring/ordinal match when the LLM is unavailable, the same
-resilience convention every other LLM call in this app follows.
-"""
+"""Matches a user's free-text reply against a short list of already-geocoded candidates after LocationAmbiguousError — never geocodes or invents a place, only selects an index into existing data or returns None; degrades to a deterministic substring/ordinal match when the LLM is unavailable, same convention as every other LLM call in this app."""
 from __future__ import annotations
 
 import json
@@ -31,8 +26,7 @@ def _describe(candidate: dict, index: int) -> str:
 
 
 def _deterministic_match(text: str, candidates: list[dict]) -> dict | None:
-    # User-facing messages present candidates 1-indexed ("1) ... 2) ..."), so a bare
-    # digit reply must be read the same way, not as a raw list index.
+    # Messages present candidates 1-indexed ("1) ... 2) ..."), so a bare digit reply must be read the same way, not as a raw list index.
     digits = re.findall(r"\d+", text)
     if digits:
         idx = int(digits[0]) - 1
@@ -42,10 +36,7 @@ def _deterministic_match(text: str, candidates: list[dict]) -> dict | None:
     for i, word in enumerate(_ORDINAL_WORDS):
         if i < len(candidates) and has_word(casefolded, (word,)):
             return candidates[i]
-    # "name" is deliberately excluded: every candidate in a disambiguation list shares
-    # essentially the same name (that's why they're ambiguous) — matching on it would
-    # match all of them at once instead of narrowing anything down. Only state/country
-    # actually distinguish one candidate from its siblings.
+    # "name" is deliberately excluded: every candidate shares essentially the same name (that's why they're ambiguous), so only state/country actually distinguish siblings.
     matches = [c for c in candidates
               if any(str(c.get(field) or "").casefold() in casefolded
                      for field in ("state", "country") if c.get(field))]

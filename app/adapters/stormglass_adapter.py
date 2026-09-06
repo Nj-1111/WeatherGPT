@@ -1,17 +1,4 @@
-"""StormGlass Adapter — fallback marine source, requires STORMGLASS_API_KEY.
-
-Chosen as the marine fallback because it's a real, independent wave/current-capable API
-with a usable free tier, mirroring how MET Norway was added as the first weather source
-genuinely independent of Open-Meteo. Same missing-key convention as ImdAdapter: fetch()
-raises rather than returning empty, and retrieval.py's existing per-source isolation
-handles that — no new "unconfigured" plumbing needed here.
-
-Built to StormGlass's documented API shape (each parameter keyed by a further dict of
-per-model readings, "sg" being their blended consensus model). Unlike
-open_meteo_marine.py, this has NOT been live-verified against a real key — StormGlass
-requires paid signup, unlike Open-Meteo's keyless API. Smoke-test against a real key
-before depending on this in production.
-"""
+"""StormGlass Adapter — fallback marine source, requires STORMGLASS_API_KEY; chosen as an independent wave/current-capable API with a usable free tier. Same missing-key convention as ImdAdapter (fetch() raises, retrieval.py's per-source isolation handles it). Built to StormGlass's documented shape (each parameter keyed by per-model readings, "sg" their blended consensus) but NOT live-verified against a real key — smoke-test before depending on this in production."""
 from __future__ import annotations
 
 import time
@@ -36,8 +23,7 @@ _FIELD_MAP = (
     ("currentDirection", "ocean_current_direction", "deg"),
     ("waterTemperature", "sea_surface_temperature", "C"),
 )
-# StormGlass blends several underlying models per field; "sg" is their own consensus
-# read. Fall back to whatever model is present when "sg" itself is missing.
+# "sg" is StormGlass's own consensus model; fall back to whatever model is present if absent.
 _PREFERRED_MODEL = "sg"
 
 

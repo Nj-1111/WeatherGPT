@@ -1,11 +1,4 @@
-"""In-process SessionStore over the existing bounded TTL cache.
-
-Reuses `services/cache.py:TTLCache` rather than growing a second eviction implementation —
-it is already LRU-bounded with expiry swept on write, which is exactly what session state
-needs. Per-process, so with multiple workers a follow-up landing on another worker sees no
-session and is treated as a new query: a redundant fetch, never a wrong answer. That is the
-same constraint `evidence_store` already carries; promoting to Redis removes both.
-"""
+"""In-process SessionStore over services/cache.py's TTLCache (already LRU-bounded with expiry swept on write) rather than a second eviction implementation; per-process, so a follow-up on another worker just looks like a new query — same constraint evidence_store carries, removed by promoting to Redis."""
 from __future__ import annotations
 
 from typing import Any

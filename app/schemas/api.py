@@ -27,13 +27,9 @@ class QueryRequestV1(BaseModel):
     question: str = Field(min_length=1, max_length=4096)
     location: LocationInput | None = None
     user_id: str | None = Field(default=None, max_length=128)
-    # Conversational follow-up short-circuit key (services/session_router.py). Distinct
-    # from user_id: one user may run several concurrent conversations, and a follow-up
-    # must only ever reuse context from its own conversation.
+    # Conversational follow-up short-circuit key (session_router.py); distinct from user_id since one user may run several concurrent conversations.
     session_id: str | None = Field(default=None, max_length=128)
-    # None means "not set" — distinct from an explicit "en" override — so the pipeline can
-    # tell "caller wants English" apart from "caller didn't say," and fall back to the
-    # guardrail's detected language only in the latter case (see services/i18n.py).
+    # None ("not set") is distinct from an explicit "en" override, so the pipeline can tell "wants English" apart from "didn't say" and only fall back to the guardrail's detected language in the latter case.
     language: str | None = Field(default=None, max_length=16)
     profile: dict[str, Any] = Field(default_factory=dict)
     timezone: str | None = Field(default=None, max_length=64)
@@ -65,9 +61,7 @@ class FeedbackRequest(BaseModel):
 
 
 class LocationOnlyResponse(BaseModel):
-    """The ACCEPT_LOCATION_ONLY branch's one response shape, identical across every
-    endpoint — a coordinates-only answer doesn't change meaning depending on which route
-    happened to receive it."""
+    """The ACCEPT_LOCATION_ONLY branch's one response shape, identical across every endpoint — a coordinates-only answer doesn't change meaning by which route received it."""
     answer: str
     location: ResolvedLocation
     request_id: str

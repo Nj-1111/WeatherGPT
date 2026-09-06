@@ -297,14 +297,28 @@ than the Gemini fallback (2-6s) that had been silently absorbing every call unti
    that inlines a `<think>` block into `content` by default, eating the token budget meant
    for the answer — `reasoning_format: "hidden"` added to every outbound request in
    `app/llm/client.py` fixes it.
-5. Security audit items **beyond §2.1/§2.9 remain open** — §2.2 (query-extractor prompt
-   injection, assessed low actual impact), §2.3 (Nominatim's per-process throttle is a
-   shared cross-tenant bottleneck), §2.5 (prose-grounding regex only catches 4 unit
-   spellings), §2.6 (request-size cap is bypassable without `Content-Length`), §2.7 (no
-   per-user cap on stored fact count/size), §2.8 (synchronous SQLite calls block the event
-   loop), §2.10 (CAP adapter has no host-allowlist/XXE-hardening for feed-supplied URLs),
-   §2.11 (raw exception text leaks into `retrieval_status`). None fixed this session —
-   full detail in `docs/security-audit-2026-09-03.md`'s punch list.
+5. **Security audit — §2.2, §2.5, §2.6, §2.7, §2.10, §2.11 closed 2026-09-07** (§2.1/§2.9
+   already closed in prior sessions). §2.2: `GuardrailDecision`'s LLM-produced string
+   fields (`location`/`time`/`verify_candidate`/`unsupported_topic`/`original_text`) now
+   carry `max_length`, matching every other user-facing field. §2.5: `check_prose_grounding`
+   now also recognizes `mph`/`inches`/`°F`, converted to their canonical bucket before
+   comparison. §2.6: the `Content-Length`-trusting check is replaced by
+   `app/main.py:MaxBodySizeMiddleware`, a raw ASGI middleware that bounds the real byte
+   stream regardless of any header. §2.7: `app/context/store.py:upsert_fact` now enforces
+   `context_max_facts_per_user`/`context_value_max_chars`, raising `ContextLimitExceeded`
+   (`app/storage/base.py`) mapped to a 422. §2.10: `CapAdapter._alert_links` now only
+   follows links on the feed's own host, and both `cap_adapter.py`/`cap_decoder.py` parse
+   with `defusedxml` (new pinned dependency) instead of stdlib `ElementTree`, which was
+   verified to block XXE but not internal-entity expansion. §2.11: `retrieval.py`'s
+   `_one` now returns `_safe_error_reason(exc)` — a small fixed set of strings — instead
+   of the exception's own text, into the client-visible `retrieval_status`.
+   **§2.3 scoped, then explicitly declined** — the fix (bound the Nominatim throttle's
+   queue depth, fail fast past a cap) was ready but not applied; this repo runs in a
+   private VPC with one known caller and Security Group network control, so the shared-IP
+   proxy scenario this closes doesn't currently apply — see "Known limitations" below for
+   the accepted-tradeoff note. **§2.4 and §2.8 remain open**, not attempted. Current status
+   of every item is `FIXES.md`; the old standalone `docs/security-audit-2026-09-03.md` was
+   merged into it and removed the same day.
 6. Rate limiting keys on `request.client.host`. Behind a proxy every caller shares one
    bucket; `X-Forwarded-For` is deliberately not trusted because it is spoofable.
 7. `GFS` needs `requirements-full.txt` (eccodes needs system libraries) — the Docker image
@@ -323,8 +337,9 @@ ruff check app tests && mypy app             # both clean
 set -a && source .env && set +a && uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
-Read `docs/SERVICES.md` first, then this file's outstanding-work register, `BUG.md`,
-`AUDIT.md`, and `TUNING_GUIDE.md` for "which file do I edit to change X."
+Read `docs/SERVICES.md` first, then `FIXES.md` for current status, `BUG.md`/`AUDIT.md` for
+the detailed narrative behind each item, and `TUNING_GUIDE.md` for "which file do I edit to
+change X."
 
 ## Session record — 2026-09-05, hostile audit and the fixes it produced
 
@@ -396,7 +411,9 @@ source at all, so "is it raining now" is answered from forecast models without s
 
 Merged here from the former `cloud.md` (deleted 2026-09-05). This is what **remains**; the
 session records above are what was fixed. `BUG.md` is the defect register, `AUDIT.md` the
-2026-09-05 teardown.
+2026-09-05 teardown. **`FIXES.md` is the current, compact "what's still open" index across
+security/bugs/roadmap — check there first; this section and the two files above carry the
+detailed narrative behind each entry.**
 
 ### Blocked on credentials
 
@@ -422,14 +439,25 @@ route to Indian warnings — it would add forecasts, observations and rainfall o
 ### Known limitations
 
 - Rate limiting keys on `request.client.host`; behind a proxy every caller shares one
-  bucket. `X-Forwarded-For` is deliberately not trusted.
+  bucket. `X-Forwarded-For` is deliberately not trusted. **Accepted for the current
+  deployment** (2026-09-06): WeatherGPT runs in a private VPC with a single known
+  caller (the other team's backend), and AWS Security Group handles network-level
+  access control — there is no public-facing proxy in front of it, so this isn't live.
+  Revisit (trust `X-Forwarded-For` only from a configured trusted-proxy IP) if the
+  deployment topology changes to sit behind a reverse proxy/load balancer with multiple
+  real clients.
 - Agreement thresholds are absolute (10mm / 3C). Verified live 2026-09-05: two sources
   whose day totals differ 2.7x (1.4mm vs 3.8mm) still read as `full_agreement`.
 - `historical`/`observation` agents slice `[:2]` off class-filtered evidence rather than
   ranked output — arbitrary, but each claim cites its own CEO.
 - Caches and the evidence store are per-process. With multiple workers `GET /evidence/{id}`
   404s across workers, and each worker pays its own guardrail cache miss. Run one worker.
-- Nominatim is throttled 1 req/s per process; multiple workers can exceed OSM policy.
+- Nominatim is throttled 1 req/s per process; multiple workers can exceed OSM policy. That
+  same throttle is also a single shared lock across every concurrent request (§2.3,
+  `FIXES.md`) — one client forcing several Nominatim fallbacks
+  can serialize location resolution for everyone else to 1/sec. Scoped, then declined
+  2026-09-07 (see the security-audit item above); revisit if this ever sits behind a
+  proxy with multiple real tenants.
 
 ### Deployment checklist
 

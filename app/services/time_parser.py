@@ -8,17 +8,14 @@ from app.config import settings
 from app.constants import IST
 
 _MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-# Each month spelled out explicitly rather than as a prefix plus \w*. The prefix form let
-# the month group swallow any suffix, so "maybe 5" matched as May 5th — confidently, and
-# with a horizon far enough out to reroute retrieval to the historical sources.
+# Each month spelled out explicitly rather than a prefix+\w*, which let the month group swallow any suffix ("maybe 5" matched as confident May 5th, rerouting to historical sources).
 MONTH_PATTERN = "|".join((
     "jan(?:uary)?", "feb(?:ruary)?", "mar(?:ch)?", "apr(?:il)?", "may", "jun(?:e)?",
     "jul(?:y)?", "aug(?:ust)?", "sep(?:t(?:ember)?)?", "oct(?:ober)?", "nov(?:ember)?",
     "dec(?:ember)?",
 ))
 _ISO_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
-# The day must sit next to the month name; searching the whole sentence for digits made
-# "2 pm on Aug 5" resolve to August 2nd.
+# The day must sit next to the month name; searching the whole sentence for digits made "2 pm on Aug 5" resolve to August 2nd.
 _DAY_MONTH = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({MONTH_PATTERN})\b")
 _MONTH_DAY = re.compile(rf"\b({MONTH_PATTERN})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b")
 _IN_HOURS = re.compile(r"\bin (\d+) hours?\b")
@@ -39,11 +36,7 @@ def resolve_timezone(name: str | None) -> tzinfo:
 
 
 def parse_time_window(text: str, now: datetime | None = None, tz: tzinfo | str | None = None):
-    """Deterministic time normalization -> (valid_from, valid_to, horizon, confidence).
-
-    The window is resolved in the location's own timezone: "tomorrow" in Springfield is
-    not the same day as "tomorrow" in Indore.
-    """
+    """Deterministic time normalization -> (valid_from, valid_to, horizon, confidence), resolved in the location's own timezone since "tomorrow" in Springfield isn't the same day as "tomorrow" in Indore."""
     if isinstance(tz, str) or tz is None:
         tz = resolve_timezone(tz)
     if now is None:
@@ -89,9 +82,7 @@ def parse_time_window(text: str, now: datetime | None = None, tz: tzinfo | str |
         base = now + timedelta(hours=int(in_hours.group(1)))
         return base, base + timedelta(hours=1), "nowcast", 0.95
 
-    # A nowcast question answered with the whole calendar day reports hours that have
-    # already passed and hours after the event ends. Floored to the top of the hour so
-    # the record covering the current hour is inside the window, not just before it.
+    # A nowcast question answered with the whole calendar day reports already-passed hours too; floored to the top of the hour so the current hour's record is inside the window.
     if base == now:
         hour_start = now.replace(minute=0, second=0, microsecond=0)
         if next_hours := _NEXT_HOURS.search(text_l):

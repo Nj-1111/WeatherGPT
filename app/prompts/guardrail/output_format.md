@@ -8,4 +8,5 @@ Output ONLY a single valid JSON object, no markdown fences, no commentary:
 {"action": "accept_location_only"|"accept_weather_full"|"reject_off_topic"|"clarify"|
 "verify"|"unsupported_topic", "location": string|null, "time": string|null,
 "verify_candidate": string|null, "clarify_reason": "garbled_input"|"no_location"|null,
-"unsupported_topic": string|null, "confidence": number, "detected_lang": string}
+"unsupported_topic": string|null, "confidence": number, "detected_lang": string,
+"persona": "none"|"marine"}

@@ -1,19 +1,10 @@
-"""Independent verification of agent claims.
-
-The reviewer must never trust the number attached to a claim. Every numeric claim declares
-how it was derived in ``Claim.extra["derivation"]``; this module re-runs that derivation
-over the evidence the claim actually cites and compares the result. A claim can therefore
-cite entirely real evidence and still be rejected, because the value hanging off that
-citation is not what the evidence says.
-
-Existence-only citation checking was sufficient while every agent was deterministic Python
-reading values straight off the fused panels. It is not sufficient once a language model
-writes a claim.
-"""
+"""Independent verification of agent claims: the reviewer never trusts the number attached to a claim — every numeric claim declares how it was derived in ``Claim.extra["derivation"]``, and this module re-runs that derivation over the cited evidence and compares, so a claim citing entirely real evidence can still be rejected if its value doesn't match.
+Existence-only citation checking was sufficient while every agent was deterministic Python reading values off the fused panels; it is not sufficient once a language model writes a claim."""
 from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from typing import Any
 
 from app.config import settings
@@ -32,17 +23,12 @@ def _close(actual: float, expected: float) -> bool:
 def _numeric(ev: CanonicalEvidenceObject, unit: str | None) -> float | None:
     if ev.value is None:
         return None
-    # The wind panel reports km/h whatever the source sent; the same conversion has to be
-    # applied here or every m/s-sourced wind claim false-fails.
+    # The wind panel reports km/h whatever the source sent; the same conversion must apply here or every m/s-sourced wind claim false-fails.
     return as_kmh(ev) if unit == "km/h" else ev.value
 
 
 def _selected(cited: list[CanonicalEvidenceObject], derivation: dict[str, Any]) -> list[CanonicalEvidenceObject]:
-    """The subset of cited evidence a derivation actually operated on.
-
-    The rain panel cites a precipitation_probability record alongside the amounts it summed.
-    Summing everything cited would recompute a total the panel never claimed.
-    """
+    """The subset of cited evidence a derivation actually operated on — the rain panel cites a precipitation_probability record alongside the summed amounts, and summing everything cited would recompute a total the panel never claimed."""
     variable = derivation.get("variable")
     window = derivation.get("accumulation_window_hours", _MISSING)
     selected = [ev for ev in cited if variable is None or ev.variable == variable]
@@ -52,12 +38,7 @@ def _selected(cited: list[CanonicalEvidenceObject], derivation: dict[str, Any]) 
 
 
 def verify_claim(claim, cited: list[CanonicalEvidenceObject]) -> tuple[list[str], list[str]]:
-    """Recompute a claim's value from its cited evidence.
-
-    Returns (errors, warnings). An error is a value that contradicts its evidence and fails
-    the request. A warning is a claim shape no verifier recognises — recorded, but not a
-    reason to reject a response that may be perfectly correct.
-    """
+    """Recompute a claim's value from its cited evidence. Returns (errors, warnings) — an error is a value that contradicts its evidence and fails the request; a warning is a claim shape no verifier recognises, recorded but not a rejection reason."""
     derivation = (claim.extra or {}).get("derivation")
     if not isinstance(derivation, dict):
         return [], [f"claim {claim.claim} declares no derivation; its value was not verified"]
@@ -97,22 +78,45 @@ def verify_claim(claim, cited: list[CanonicalEvidenceObject]) -> tuple[list[str]
     return [], []
 
 
-_QUANTITY = re.compile(r"(-?\d+(?:\.\d+)?)\s*(mm|%|°\s*c|celsius|c|km\s*/\s*h|kmph|kph)\b", re.IGNORECASE)
+_QUANTITY = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*"
+    r"(mm|inches?|%|°\s*f|fahrenheit|°\s*c|celsius|c|km\s*/\s*h|kmph|kph|mph)\b",
+    re.IGNORECASE)
 
-_UNIT_ALIASES = {"mm": "mm", "%": "%", "c": "C", "°c": "C", "° c": "C", "celsius": "C",
-                 "km/h": "km/h", "km /h": "km/h", "km/ h": "km/h", "km / h": "km/h",
-                 "kmph": "km/h", "kph": "km/h"}
+# raw regex-matched spelling -> (canonical bucket in `allowed`, conversion to it). Bare "in"/"f" are excluded — they'd false-match prose like "24 in the morning" — so imperial units only match unambiguous spellings.
+def _identity(value: float) -> float:
+    return value
 
 
-def _normalise_unit(raw: str) -> str | None:
+def _f_to_c(value: float) -> float:
+    return (value - 32) * 5 / 9
+
+
+def _mph_to_kmh(value: float) -> float:
+    return value * 1.609344
+
+
+def _inches_to_mm(value: float) -> float:
+    return value * 25.4
+
+
+_UNIT_ALIASES: dict[str, tuple[str, Callable[[float], float]]] = {
+    "mm": ("mm", _identity), "inch": ("mm", _inches_to_mm), "inches": ("mm", _inches_to_mm),
+    "%": ("%", _identity),
+    "c": ("C", _identity), "°c": ("C", _identity), "° c": ("C", _identity), "celsius": ("C", _identity),
+    "°f": ("C", _f_to_c), "° f": ("C", _f_to_c), "fahrenheit": ("C", _f_to_c),
+    "km/h": ("km/h", _identity), "km /h": ("km/h", _identity), "km/ h": ("km/h", _identity),
+    "km / h": ("km/h", _identity), "kmph": ("km/h", _identity), "kph": ("km/h", _identity),
+    "mph": ("km/h", _mph_to_kmh),
+}
+
+
+def _normalise_unit(raw: str) -> tuple[str, Callable[[float], float]] | None:
     return _UNIT_ALIASES.get(re.sub(r"\s+", " ", raw.strip().lower()))
 
 
 def grounded_values(wio) -> dict[str, set[float]]:
-    """Every quantity the deterministic pipeline actually produced, keyed by unit.
-
-    Prose may restate these and nothing else.
-    """
+    """Every quantity the deterministic pipeline actually produced, keyed by unit — prose may restate these and nothing else."""
     allowed: dict[str, set[float]] = {"mm": set(), "%": set(), "C": set(), "km/h": set()}
 
     rain = wio.weather.rain or {}
@@ -152,22 +156,18 @@ def grounded_values(wio) -> dict[str, set[float]]:
 
 
 def check_prose_grounding(text: str, wio) -> list[str]:
-    """Quantities in free text that the pipeline never produced.
-
-    Only numbers carrying a physical unit are checked. Bare numerals ("the next 24 hours",
-    "three sources") are prose, not weather claims, and treating them as claims produces
-    nothing but false rejections. The prompt separately forbids introducing any number.
-    """
+    """Quantities in free text that the pipeline never produced. Only numbers carrying a physical unit are checked — bare numerals ("the next 24 hours") are prose, not weather claims, and checking them just produces false rejections; the prompt separately forbids introducing any number."""
     ungrounded: list[str] = []
     allowed = grounded_values(wio)
     for raw_value, raw_unit in _QUANTITY.findall(text or ""):
-        unit = _normalise_unit(raw_unit)
-        if unit is None:
+        normalised = _normalise_unit(raw_unit)
+        if normalised is None:
             continue
-        stated = float(raw_value)
-        # An LLM writing "2 mm" for 2.4 is rounding, which is allowed; "45 mm" is not.
+        unit, convert = normalised
+        stated = convert(float(raw_value))
+        # "2 mm" for 2.4 is rounding, allowed; "45 mm" is not. Conversion (e.g. mph->km/h) happens before this comparison, so a restated unit still checks against the same grounded value.
         if any(_close(stated, round(value, places))
                for value in allowed[unit] for places in (0, 1, 2)):
             continue
-        ungrounded.append(f"{raw_value} {unit}")
+        ungrounded.append(f"{raw_value} {raw_unit.strip()}")
     return ungrounded

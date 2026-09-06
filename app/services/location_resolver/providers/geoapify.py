@@ -1,11 +1,4 @@
-"""Primary geocoder — Geoapify. Falls back to Open-Meteo/Nominatim when unconfigured or
-when it yields nothing usable (see location_resolver/__init__.py's _GEOCODERS order).
-
-Requires GEOAPIFY_API_KEY; search() returns [] rather than raising when the key is
-missing, so an unconfigured deployment silently falls through to the free keyless chain
-exactly as it did before this provider existed — no behavior change for anyone who
-hasn't set the key.
-"""
+"""Primary geocoder — Geoapify, falling back to Open-Meteo/Nominatim when unconfigured or empty (see __init__.py's _GEOCODERS order). Requires GEOAPIFY_API_KEY; search() returns [] rather than raising when unset, so an unconfigured deployment falls through to the free keyless chain exactly as before this provider existed."""
 from __future__ import annotations
 
 from typing import Any
@@ -16,8 +9,7 @@ from app.services.location_resolver.providers.base import LocationCandidate
 
 SEARCH_URL = "https://api.geoapify.com/v1/geocode/search"
 
-# Geoapify's result_type values, mapped onto GeoNames-style codes so ranking.py stays
-# provider-agnostic (same approach nominatim.py takes for OSM's place types).
+# Geoapify's result_type values mapped onto GeoNames-style codes so ranking.py stays provider-agnostic (same approach nominatim.py takes for OSM's place types).
 _CAPITAL_TYPES = {"city", "administrative"}
 
 

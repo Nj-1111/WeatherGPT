@@ -12,9 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _geometry(record: dict[str, Any], reference: str, geometry_type: str = "Point") -> Geometry | None:
-    """No coordinate default. A record without a position used to inherit Nagpur's, which
-    then ranked by distance to the user as though it were local — wrong-location evidence
-    presented as authoritative, with a clean provenance trail hiding it."""
+    """No coordinate default — a record without a position used to inherit Nagpur's and rank by distance as though local, wrong-location evidence presented as authoritative."""
     lat, lon = record.get("lat"), record.get("lon")
     if lat is None or lon is None:
         logger.warning("imd.record_without_coordinates", extra={"reference": reference})
@@ -61,10 +59,7 @@ def _ceo_base(source_record_id, evidence_class, variable, value, unit, statistic
     )
 
 def decode_city_forecast(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
-    """
-    Example IMD city forecast record (fields vary):
-    {city, forecast_date, temp_max, temp_min, rainfall, humidity, wind_speed, issued_at}
-    """
+    """Example fields (vary): city, forecast_date, temp_max, temp_min, rainfall, humidity, wind_speed, issued_at."""
     out: list[CanonicalEvidenceObject] = []
     city = record.get("city") or record.get("station") or "unknown"
     geom = _geometry(record, city)
@@ -96,10 +91,7 @@ def decode_current(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
     return out
 
 def decode_warning(record: dict[str, Any]) -> list[CanonicalEvidenceObject]:
-    """
-    District warning: hazards as category codes + colour/severity
-    {district, issue_time, valid_from, valid_to, hazard: "heavy rainfall", colour: "orange", severity, category_code}
-    """
+    """District warning: hazards as category codes + colour/severity, e.g. {district, issue_time, valid_from, valid_to, hazard, colour, severity, category_code}."""
     district = record.get("district", "unknown")
     geom = Geometry(type="Polygon", coordinates=None, reference=district)
     issued = _parse_time(record.get("issue_time") or record.get("issued_at"))

@@ -1,13 +1,4 @@
-"""Fallback geocoder — OpenStreetMap Nominatim.
-
-Earns its place by covering exactly what Open-Meteo's populated-places dataset misses
-(verified live): Indian districts ("Nalanda"), states ("Jammu and Kashmir"), smaller
-towns ("Wai"), and historical aliases. Used only after the primary yields nothing
-usable, which keeps request volume inside OSM's ~1 req/sec fair-use policy.
-
-Data is ODbL-licensed; deployments surfacing this data are expected to credit
-"© OpenStreetMap contributors".
-"""
+"""Fallback geocoder — OpenStreetMap Nominatim, covering what Open-Meteo's populated-places dataset misses (verified live): Indian districts, states, small towns, historical aliases. Used only after the primary yields nothing, keeping volume inside OSM's ~1 req/sec fair-use policy. Data is ODbL-licensed; deployments surfacing it should credit "© OpenStreetMap contributors"."""
 from __future__ import annotations
 
 import asyncio
@@ -27,8 +18,7 @@ _CAPITAL_TYPES = {"city", "administrative"}
 class NominatimGeocoder:
     name = "nominatim"
 
-    # OSM's fair-use policy is a hard 1 request/second and they block by IP. Nothing
-    # else enforces it, so the provider paces itself.
+    # OSM's fair-use policy is a hard 1 req/sec, IP-blocked if exceeded, and nothing else enforces it, so the provider paces itself — deliberately a single process-wide lock (a known shared-bottleneck tradeoff, see §2.3 in FIXES.md), not per-client.
     _lock = asyncio.Lock()
     _last_request_at = 0.0
 
@@ -70,8 +60,7 @@ class NominatimGeocoder:
             return None
         country_code = address.get("country_code")
         district = address.get("state_district") or address.get("county")
-        # Nominatim has no population; approximate importance via place type so that
-        # a city outranks a hamlet of the same name in ranking.py.
+        # Nominatim has no population; approximate importance via place type so a city outranks a same-named hamlet in ranking.py.
         feature_code = "PPLA" if item.get("type") in _CAPITAL_TYPES else "PPL"
         return LocationCandidate(
             name=str(name), lat=lat, lon=lon,

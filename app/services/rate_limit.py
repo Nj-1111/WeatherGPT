@@ -1,8 +1,4 @@
-"""Per-client fixed-window rate limiting.
-
-Keyed on the socket peer address: behind a proxy every caller would present the same IP,
-and trusting X-Forwarded-For instead would let a client spoof its way past the limit.
-"""
+"""Per-client fixed-window rate limiting, keyed on the socket peer address — behind a proxy every caller shares that IP, and trusting X-Forwarded-For instead would let a client spoof past the limit (accepted tradeoff for the current deployment, see CLAUDE.md's Known limitations)."""
 from __future__ import annotations
 
 import time
@@ -26,9 +22,7 @@ class RateLimiter:
         if last_day != day:
             last_day, day_count = day, 0
 
-        # The rolled window is written back on every path, refused or not. Returning early
-        # skipped the write, so a new day's counter only took effect on the next request
-        # that happened to be allowed.
+        # Written back on every path, refused or not — returning early used to skip the write, so a new day's counter only took effect on the next allowed request.
         retry_after: int | None = None
         if minute_count >= self._per_minute:
             retry_after = int((minute + 1) * 60 - now) or 1

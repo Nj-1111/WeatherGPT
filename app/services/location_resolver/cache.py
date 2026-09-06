@@ -1,9 +1,4 @@
-"""Location-only TTL cache.
-
-A separate instance from weather_cache, not a separate implementation: location facts
-are stable for weeks while forecasts expire in minutes, and one TTL cannot serve both.
-Swappable for Redis later without touching the resolver.
-"""
+"""Location-only TTL cache — a separate instance from weather_cache (not implementation) since location facts are stable for weeks while forecasts expire in minutes; swappable for Redis later without touching the resolver."""
 from __future__ import annotations
 
 from typing import Any

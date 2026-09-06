@@ -88,3 +88,23 @@ def test_pending_verification_is_cleared_after_one_read(monkeypatch):
 
 def test_pending_verification_absent_for_unknown_session():
     assert asyncio.run(session_router.consume_pending_verification("never-seen")) is None
+
+
+def test_pending_marine_followup_is_read_back(monkeypatch):
+    monkeypatch.setattr(session_router, "_marine_followup_store", InMemorySessionStore(8, 300))
+    asyncio.run(session_router.store_pending_marine_followup("s1", "should I go fishing near Kochi"))
+    result = asyncio.run(session_router.consume_pending_marine_followup("s1"))
+    assert result == "should I go fishing near Kochi"
+
+
+def test_pending_marine_followup_is_cleared_after_one_read(monkeypatch):
+    monkeypatch.setattr(session_router, "_marine_followup_store", InMemorySessionStore(8, 300))
+    asyncio.run(session_router.store_pending_marine_followup("s1", "should I go fishing near Kochi"))
+    asyncio.run(session_router.consume_pending_marine_followup("s1"))
+    assert asyncio.run(session_router.consume_pending_marine_followup("s1")) is None
+
+
+def test_pending_marine_followup_expires(monkeypatch):
+    monkeypatch.setattr(session_router, "_marine_followup_store", InMemorySessionStore(8, -1))
+    asyncio.run(session_router.store_pending_marine_followup("s1", "should I go fishing near Kochi"))
+    assert asyncio.run(session_router.consume_pending_marine_followup("s1")) is None

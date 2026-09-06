@@ -48,8 +48,7 @@ def _rain_panel(scored) -> tuple[dict | None, str]:
         return None, ""
 
     amounts = _series(scored, "precipitation_amount", source)
-    # Accumulations only sum within one window length; a 1h and a 6h record describe
-    # overlapping time, so mixing them double-counts. Prefer the finest window available.
+    # Accumulations only sum within one window length (mixing 1h/6h records double-counts overlapping time); prefer the finest window available.
     by_window = defaultdict(list)
     for ev in amounts:
         by_window[ev.accumulation_window_hours].append(ev)
@@ -88,8 +87,7 @@ def _rain_panel(scored) -> tuple[dict | None, str]:
         if ev.variable == "precipitation_amount" and ev.ensemble_member is not None and ev.value is not None:
             members[ev.valid_from].append(ev.value)
     if members:
-        # One timestamp's spread across members is a distribution; pooling every timestamp
-        # smears it into a shape no single moment ever had.
+        # One timestamp's spread across members is a distribution; pooling every timestamp would smear it into a shape no single moment ever had.
         wettest = max(members.values(), key=lambda values: sum(values))
         panel["member_values"] = wettest
         panel["member_count"] = len(wettest)
@@ -131,9 +129,7 @@ def _wind_panel(scored) -> dict | None:
             "evidence_ids": [peak.evidence_id]}
 
 
-# Hazard-relevant fields report the peak over the window (matches _wind_panel's own
-# rationale); direction/period/temperature fields report the most recent reading instead,
-# since maxing a direction or a temperature doesn't mean anything.
+# Hazard-relevant fields report the peak over the window (matches _wind_panel); direction/period/temperature fields report the most recent reading instead, since maxing those doesn't mean anything.
 _MARINE_PEAK_FIELDS = (("wave_height", "wave_height_m"), ("ocean_current_velocity", "current_velocity_kmh"))
 _MARINE_LATEST_FIELDS = (("wave_direction", "wave_direction_deg"), ("wave_period", "wave_period_s"),
                          ("ocean_current_direction", "current_direction_deg"),
@@ -174,11 +170,7 @@ def _marine_panel(scored) -> dict | None:
 
 
 def _fallback_summary(weather: WIOWeather) -> str:
-    """weather.summary is written by _rain_panel alone — a temperature-only or wind-only
-    question (no rain keyword, so no precipitation evidence was even fetched) left it
-    empty, and every consumer (main.py's _synthesize, orchestrator.py's explanation fact
-    sheet) read that as "no evidence at all" even with a fully populated temperature/wind/
-    marine panel right next to it. Fixed once here so every consumer benefits."""
+    """weather.summary is written by _rain_panel alone, so a rain-less question left it empty and every consumer read that as "no evidence" despite a populated temperature/wind/marine panel; fixed once here for every consumer."""
     parts: list[str] = []
     if weather.temperature:
         t = weather.temperature
@@ -191,8 +183,7 @@ def _fallback_summary(weather: WIOWeather) -> str:
 
 
 def place_names(resolved_location: dict) -> tuple[list[str], list[str]]:
-    """(district/city names, state names) a warning's area text might use for this
-    location. Split because a state name alone is weaker evidence — see area_names_query."""
+    """(district/city names, state names) a warning's area text might use; split because a bare state name is weaker evidence — see area_names_query."""
     state = resolved_location.get("state")
     local = [resolved_location.get("district"), resolved_location.get("normalized_name"),
              resolved_location.get("raw")]
@@ -203,14 +194,7 @@ def place_names(resolved_location: dict) -> tuple[list[str], list[str]]:
 
 
 def covers(ev, q_lat: float, q_lon: float, names: tuple[list[str], list[str]]) -> bool:
-    """Whether an official warning applies to this user.
-
-    Polygon first when there is one. Otherwise fall back to the area description: the
-    feed is national, so an untestable warning used to be included by default, which
-    showed every alert in India to every user and (via official_warning.active) maxed
-    RADE's risk aversion for all of them. Defaulting the other way costs a
-    poorly-described local warning; defaulting as before cost every recommendation.
-    """
+    """Whether a warning applies here: polygon first, else area-description fallback — the feed is national, so defaulting an untestable warning to "included" once showed every alert in India to every user and maxed RADE's risk aversion for all of them."""
     by_polygon = covers_query(ev, q_lat, q_lon)
     if by_polygon is not None:
         return by_polygon
@@ -219,10 +203,7 @@ def covers(ev, q_lat: float, q_lon: float, names: tuple[list[str], list[str]]) -
 
 def filter_covered_warnings(ceos: list[CanonicalEvidenceObject],
                             resolved_location: dict) -> list[CanonicalEvidenceObject]:
-    """Drop warning-class CEOs that don't cover this location; every other evidence_class
-    passes through untouched. Applied once in main.py, upstream of both build_wio
-    (wio.evidence) and run_all_agents (run_warning_agent's claims) — the one point their
-    shared evidence list passes through, so a single filter fixes both."""
+    """Drop non-covering warning-class CEOs (everything else passes through); applied once in main.py upstream of both build_wio and run_all_agents, so one filter fixes both."""
     q_lat, q_lon = resolved_location["lat"], resolved_location["lon"]
     names = place_names(resolved_location)
     return [e for e in ceos if e.evidence_class != "warning" or covers(e, q_lat, q_lon, names)]
@@ -245,9 +226,7 @@ def _warning(ceos, q_lat: float, q_lon: float,
 
 
 def _evidence_summaries(scored) -> list[EvidenceSummary]:
-    """Ensemble members are inputs to a distribution, not individually meaningful claims:
-    one member's 0.3mm says nothing on its own. They collapse to a single summary row and
-    stay retrievable by ID."""
+    """Ensemble members are distribution inputs, not individually meaningful claims, so they collapse to one summary row and stay retrievable by ID."""
     summaries = [
         EvidenceSummary(evidence_id=e.evidence_id, source=e.source, evidence_class=e.evidence_class,
                         variable=e.variable, value=e.value, unit=e.unit,

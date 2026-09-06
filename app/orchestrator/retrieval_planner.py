@@ -20,8 +20,7 @@ class RetrievalPlan(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
-# Requesting a temperature means any of its statistics is useful: sources report
-# instantaneous, daily-max and daily-min under different canonical names.
+# Requesting a temperature means any of its statistics is useful: sources report instantaneous, daily-max and daily-min under different canonical names.
 _VARIABLE_FAMILIES = {
     "precipitation": ["precipitation_amount", "precipitation_probability"],
     "temperature": ["temperature_2m", "temperature_max", "temperature_min"],
@@ -48,12 +47,12 @@ _HISTORY_WORDS = ("usual", "usually", "history", "historical", "climate", "norma
 
 
 def has_word(text: str, words: tuple[str, ...]) -> bool:
-    """Whole-word matching. Substring matching made 'go' match Goa and mango, and
-    'sea' match season, silently turning weather questions into travel decisions."""
+    """Whole-word matching — substring matching made 'go' match Goa/mango and 'sea' match season, silently turning weather questions into travel decisions."""
     return any(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text) for word in words)
 
 
-def build_retrieval_plan(question: str, horizon: str, decision_type: str | None = None) -> RetrievalPlan:
+def build_retrieval_plan(question: str, horizon: str, decision_type: str | None = None,
+                         persona: str | None = None) -> RetrievalPlan:
     text = question.casefold()
     decision = decision_type
     if not decision:
@@ -69,15 +68,15 @@ def build_retrieval_plan(question: str, horizon: str, decision_type: str | None 
         variables.extend(_VARIABLE_FAMILIES["temperature"])
     if has_word(text, _WIND_WORDS) or decision in {"spray", "marine", "travel"}:
         variables.extend(_VARIABLE_FAMILIES["wind"])
-    need_marine = has_word(text, _MARINE_WORDS) or decision == "marine"
+    # persona is the guardrail's broader LLM-classified marine signal (covers beach/coastal phrasing with no fish/boat/sail/wave/tide keyword); without it a persona=marine query fetches no marine data.
+    need_marine = has_word(text, _MARINE_WORDS) or decision == "marine" or persona == "marine"
     if need_marine:
         variables.extend(_VARIABLE_FAMILIES["marine"])
     if not variables:
         variables = _VARIABLE_FAMILIES["temperature"] + _VARIABLE_FAMILIES["precipitation"]
     variables = list(dict.fromkeys(variables))
 
-    # CAP is always retrieved: an official warning is safety information, and gating it on
-    # the user happening to say "warning" hid a live thunderstorm alert from "weather in X".
+    # CAP is always retrieved: official warnings are safety information — gating on the user saying "warning" hid a live thunderstorm alert from "weather in X".
     classes: list[EvidenceClassName] = ["forecast", "warning"]
     sources = ["OPEN_METEO", "MET_NORWAY", "CAP"]
     reasons = ["forecast requested", "official warnings always checked"]

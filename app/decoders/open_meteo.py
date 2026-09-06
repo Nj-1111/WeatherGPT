@@ -18,10 +18,8 @@ def decode_open_meteo(payload: dict[str, Any], lat: float, lon: float) -> list[C
     wind = hourly.get("wind_speed_10m") or []
     issued = datetime.now(timezone.utc)
 
-    # No artificial cap here: forecast_days (set by the caller from the query window)
-    # already bounds what Open-Meteo returns. A fixed 48h slice used to sit here and
-    # could silently drop the requested window entirely — "tomorrow afternoon" IST
-    # lands past hour 48 depending on what time of day, UTC, the request is made.
+    # No artificial cap: forecast_days already bounds this. A fixed 48h slice used to sit here
+    # and could drop the whole window — "tomorrow afternoon" IST lands past hour 48 in UTC.
     for i, t in enumerate(times):
         try:
             valid = datetime.fromisoformat(t.replace("Z","+00:00"))

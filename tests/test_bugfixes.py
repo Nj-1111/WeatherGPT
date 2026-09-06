@@ -350,3 +350,22 @@ def test_location_ambiguous_follow_up_that_matches_nothing_is_treated_as_a_fresh
     # deterministic guardrail fallback can't classify either) rather than forcing a guess
     # at which Kalyani was meant.
     assert second.status_code != 200
+
+
+def test_2_6_body_size_cap_holds_even_without_content_length():
+    """§2.6: the cap used to trust the client-supplied Content-Length header, so a body
+    sent without one (e.g. chunked transfer encoding) bypassed the check entirely."""
+    async def oversized_chunks():
+        chunk = b"x" * 8192
+        for _ in range(20):  # ~160KB, well over the default 64KB cap
+            yield chunk
+
+    async def _send():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+            return await client.post("/wio/query", content=oversized_chunks(),
+                                     headers={"content-type": "application/json"})
+
+    response = asyncio.run(_send())
+    assert "content-length" not in response.request.headers
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "REQUEST_TOO_LARGE"

@@ -32,6 +32,11 @@ Hinglish/Romanized Hindi is common: "kal" = tomorrow, "parso" = day after tomorr
 "barish"/"baarish" = rain, "mausam" = weather. Location and time are always separate
 fields even when adjacent: "Rajkot on 2026-08-01" -> location="Rajkot", time="2026-08-01".
 
+After the action is determined (only ever for rules 6 or 7 above — every other rule means
+no weather answer is being given, so persona does not apply), additionally classify
+persona: if the text is about fishing, sailing, boating, or beach/coastal activity, set
+persona="marine"; otherwise persona="none".
+
 Also detect the dominant language of the input text and report it as an ISO 639-1 code in
 "detected_lang" (e.g. "en", "bn", "hi"). Romanized/Hinglish text using Hindi vocabulary in
 Latin script should still be reported as "hi". If you cannot tell, use "en".

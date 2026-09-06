@@ -14,6 +14,8 @@ class WIOQuery(BaseModel):
     valid_to: datetime | None = None
     intent: str | None = None  # e.g. precipitation, pesticide_spraying, marine
     lang: str = "en"
+    # Broader, guardrail-classified signal than intent (set only when retrieval_planner's narrower decision-keyword match fires); "none" for any unrecognized/future value, never a validation failure.
+    persona: str = "none"
 
 class WIOWeather(BaseModel):
     summary: str = ""

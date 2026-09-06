@@ -1,9 +1,4 @@
-"""Process-local evidence index backing GET /evidence/{id}.
-
-Bounded and TTL-expiring: this grows by one entry per CEO per request (~96 on a single
-day-ahead query), so without eviction a long-running process leaks until it is killed.
-Entries outlive a request long enough for a user to follow a citation, not forever.
-"""
+"""Process-local evidence index backing GET /evidence/{id} — bounded and TTL-expiring since this grows ~96 entries per day-ahead query, and entries outlive a request only long enough for a user to follow a citation, not forever."""
 from __future__ import annotations
 
 from collections import OrderedDict

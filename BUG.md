@@ -1,5 +1,8 @@
 # BUG.md — known defects
 
+**Current open/closed status for every item below is tracked in `FIXES.md`** — this file
+is the detailed narrative and reproduction steps behind each entry, not the live index.
+
 Status as of 2026-09-05. The 2026-09-05 teardown's findings live in `AUDIT.md`;
 this file stays the defect register. Every entry here was verified against real code or live data,
 not inferred. Where something is a deliberate design trade rather than a defect it is

@@ -1,9 +1,4 @@
-"""One HTTP connection pool for the whole process.
-
-Every adapter used to open its own AsyncClient per call, so a request paid a fresh TLS
-handshake per source. Sharing one pooled client keeps connections warm across requests,
-which is the largest avoidable latency on a single-instance deployment.
-"""
+"""One pooled HTTP client for the whole process — every adapter used to open its own AsyncClient per call, paying a fresh TLS handshake per source; sharing one keeps connections warm, the largest avoidable latency on a single-instance deployment."""
 from __future__ import annotations
 
 import httpx

@@ -1,7 +1,4 @@
-"""Member-level Open-Meteo ensemble adapter.
-
-A deterministic mean returned by an endpoint is deliberately rejected: it is not an ensemble.
-"""
+"""Member-level Open-Meteo ensemble adapter — a deterministic mean returned by an endpoint is deliberately rejected: it is not an ensemble."""
 from __future__ import annotations
 
 import re
@@ -39,9 +36,7 @@ class OpenMeteoEnsembleAdapter(WeatherSourceAdapter):
             return []
         geometry = Geometry(type="GridCell", coordinates=[lon, lat])
         results: list[CanonicalEvidenceObject] = []
-        # "precipitation" is the raw Open-Meteo field name, not a valid CanonicalVariable — must
-        # map to the canonical enum value or every row fails Pydantic validation and the whole
-        # source silently reports "unavailable".
+        # "precipitation" isn't a valid CanonicalVariable — unmapped, every row fails validation silently.
         canonical_variable = {"temperature_2m": "temperature_2m", "precipitation": "precipitation_amount"}
         for index, raw_time in enumerate(hourly.get("time", [])):  # no artificial cap — see open_meteo.py
             try:

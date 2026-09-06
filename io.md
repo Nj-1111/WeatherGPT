@@ -85,7 +85,7 @@ sub-localities still cost one clarification round-trip rather than resolving in 
 shot. Also rejected: adopting komoot/photon as a geocoder — it indexes the same
 OpenStreetMap data Nominatim already uses and performed worse in a live test; self-hosting
 needs new Java+OpenSearch infrastructure beyond this repo's MLOps scope. Revisit only if
-Nominatim's 1 req/s throttle becomes an actual production bottleneck (`AUDIT.md` §2.3).
+Nominatim's 1 req/s throttle becomes an actual production bottleneck (`FIXES.md` §2.3).
 
 ---
 

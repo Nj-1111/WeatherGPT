@@ -14,8 +14,7 @@ from app.schemas.ceo import CanonicalEvidenceObject
 
 logger = logging.getLogger(__name__)
 
-# Claims whose value is a decision or a piece of user context, not a measurement: there is
-# no evidence record to recompute them from.
+# Claims whose value is a decision or user-context fact, not a measurement — no evidence record to recompute them from.
 _NOT_MEASURED = {"op": "none"}
 
 
@@ -31,10 +30,7 @@ async def run_context_agent(user_context: dict[str, Any], question: str) -> Agen
 async def run_forecast_agent(wio) -> AgentResult:
     start=time.time()
     claims=[]
-    # Claims are read off the fused panels so they describe, and cite, exactly the numbers
-    # the user is shown. Slicing unranked CEOs cited evidence unrelated to the claim.
-    # Each carries the derivation the panel performed, so the reviewer can recompute it
-    # from the cited evidence instead of taking the number on trust.
+    # Claims read off the fused panels so they cite exactly the numbers shown (slicing unranked CEOs cited unrelated evidence); each carries its derivation so the reviewer can recompute it instead of trusting the number.
     for name, panel, value_key, derivation in (
         ("precipitation_amount", wio.weather.rain, "value_mm",
          lambda p: {"op": "sum", "variable": p.get("variable"), "unit": p.get("unit"),
@@ -87,12 +83,7 @@ async def run_decision_agent(result, evidence_ids: list[str]) -> AgentResult:
     return AgentResult(agent_name="decision", claims=claims, confidence=result.confidence, execution_time_ms=int((time.time()-start)*1000), model=DETERMINISTIC, status="success")
 
 async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[CanonicalEvidenceObject]) -> AgentResult:
-    """The anti-hallucination gate.
-
-    Citing real evidence is necessary but not sufficient: the value attached to the citation
-    is recomputed from that evidence and must match. Free-text claims are checked instead for
-    quantities the pipeline never produced.
-    """
+    """The anti-hallucination gate: citing real evidence is necessary but not sufficient — the cited value is recomputed and must match; free-text claims are instead checked for quantities the pipeline never produced."""
     start=time.time()
     by_id={c.evidence_id: c for c in ceos}
     errors: list[str]=[]
@@ -102,8 +93,7 @@ async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[C
             unknown=[eid for eid in c.evidence_ids if not eid or eid not in by_id]
             for eid in unknown:
                 errors.append(f"{r.agent_name} claim {c.claim} references unknown evidence {eid!r}")
-            # An explanation restates panels rather than citing a record of its own; the
-            # grounding check below is the stronger constraint on what it may say.
+            # An explanation restates panels rather than citing its own record; the grounding check below is the stronger constraint on what it may say.
             if not c.evidence_ids and not c.claim.startswith("context.") and c.claim != "explanation":
                 errors.append(f"{r.agent_name} claim {c.claim} has no evidence")
                 continue
@@ -117,8 +107,7 @@ async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[C
                 if settings.reviewer_prose_failure_mode == "fail":
                     errors.append(detail)
                 else:
-                    # Suppressed rather than fatal: the guarantee is that no fabricated
-                    # number reaches the user, not that a third-party model can 503 the API.
+                    # Suppressed rather than fatal: the guarantee is no fabricated number reaches the user, not that a third-party model can 503 the API.
                     warnings.append(f"{detail}; explanation suppressed")
                     r.claims=[claim for claim in r.claims if claim is not c]
                     r.errors.append(detail)
@@ -141,10 +130,7 @@ _EXPLANATION_SYSTEM = (
 
 
 def _fact_sheet(wio, decision) -> str:
-    # The user's raw question is deliberately not included: it is the one caller-controlled
-    # string that would reach the model, and check_prose_grounding only constrains numbers
-    # carrying a unit, not instructions. query.intent carries the same orientation from a
-    # closed set the pipeline derived (retrieval_planner's decision context, or the horizon).
+    # The raw question is deliberately excluded — it's the one caller-controlled string reaching the model, and check_prose_grounding only constrains numbers, not instructions; query.intent gives the same orientation from a closed, pipeline-derived set.
     lines=[f"Intent: {wio.query.intent or 'general weather'}",
            f"Location: {wio.query.resolved_location.get('normalized_name') or wio.query.resolved_location.get('raw', 'unknown')}",
            f"Window: {wio.query.valid_from} to {wio.query.valid_to}",
@@ -161,6 +147,14 @@ def _fact_sheet(wio, decision) -> str:
     wind=wio.weather.wind or {}
     if wind:
         lines.append(f"Wind: maximum {wind.get('value_kmh')} km/h (source {wind.get('source')})")
+    if wio.query.persona == "marine":
+        marine=wio.weather.marine or {}
+        if marine:
+            lines.append(
+                f"Marine conditions: wave height up to {marine.get('wave_height_m', 'unknown')} m, "
+                f"current velocity up to {marine.get('current_velocity_kmh', 'unknown')} km/h, "
+                f"sea surface temperature {marine.get('sea_surface_temp_c', 'unknown')} C "
+                f"(source {marine.get('source')})")
     if wio.official_warning.active:
         lines.append(f"Official warning: {wio.official_warning.severity} {wio.official_warning.event} from {wio.official_warning.authority}")
     lines.append(f"Source agreement: {wio.agreement.status}. {wio.agreement.notes}".strip())
@@ -174,21 +168,16 @@ def _fact_sheet(wio, decision) -> str:
 
 
 def _panel_evidence_ids(wio) -> list[str]:
+    # Marine included so a marine-only query (no rain/temperature/wind evidence) doesn't produce an empty list here, which would make run_explanation_agent silently skip exactly the queries this exists to describe.
     ids: list[str]=[]
-    for panel in (wio.weather.rain, wio.weather.temperature, wio.weather.wind):
+    for panel in (wio.weather.rain, wio.weather.temperature, wio.weather.wind, wio.weather.marine):
         for eid in (panel or {}).get("evidence_ids", []):
             if eid not in ids:
                 ids.append(eid)
     return ids
 
 def _requires_big_llm(wio, decision: AgentResult | None) -> bool:
-    """Deterministic complexity trigger for the big LLM tier: fires only when the
-    explanation needs real multi-step reasoning — a RADE decision that could not resolve
-    confidently (a deferred decision always scores confidence 0), or fused sources that
-    disagree. Restating one panel value never needs it. `decision.claims` is checked (not
-    just `decision is not None`) because `run_decision_agent` returns an empty-claims,
-    confidence=0.5 result when RADE never ran at all — that must not look "low confidence".
-    """
+    """Deterministic complexity trigger for the big tier: fires only for a RADE decision that couldn't resolve confidently (deferred = confidence 0) or disagreeing fused sources, never for restating one panel value. `decision.claims` is checked, not just `decision is not None`, because `run_decision_agent` returns empty claims at confidence=0.5 when RADE never ran — that must not look "low confidence"."""
     if wio.disagreements:
         return True
     return (decision is not None and bool(decision.claims)
@@ -196,15 +185,7 @@ def _requires_big_llm(wio, decision: AgentResult | None) -> bool:
 
 
 async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") -> AgentResult:
-    """The one agent that calls a language model. It explains; it never originates a number.
-
-    Everything it writes passes the reviewer's grounding check, and any failure — a dead
-    endpoint, an exhausted chain, an empty reply — degrades to the deterministic template.
-    Prose over already-fused panels is a small-tier job; the big tier is woken only by
-    `_requires_big_llm`'s deterministic trigger, never by asking the small model whether it
-    feels out of its depth. An unconfigured big tier is a no-op fallback to small, not an
-    error — leaving `BIG_LLM_*` unset must not change behavior.
-    """
+    """The one agent that calls an LLM — it explains, never originates a number. Everything it writes passes the reviewer's grounding check; any failure (dead endpoint, exhausted chain, empty reply) degrades to the deterministic template. Prose over fused panels is a small-tier job; the big tier wakes only via `_requires_big_llm`'s trigger, never by asking the small model if it feels out of its depth, and an unconfigured big tier is a no-op fallback to small, not an error."""
     start=time.time()
     def _result(claims, status, model=DETERMINISTIC, errors=None) -> AgentResult:
         return AgentResult(agent_name="explanation", claims=claims, confidence=0.85 if claims else 0.5,
@@ -213,14 +194,15 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     panel_ids=_panel_evidence_ids(wio)
     if not panel_ids:
         return _result([], "success")
+    tone_directive = settings.rade_marine_tone_directive if wio.query.persona == "marine" else settings.explanation_tone_directive
     messages=[{"role": "system", "content": _EXPLANATION_SYSTEM.format(
-                  lang=lang, max_words=settings.llm_max_words, tone_directive=settings.explanation_tone_directive)},
+                  lang=lang, max_words=settings.llm_max_words, tone_directive=tone_directive)},
               {"role": "user", "content": _fact_sheet(wio, decision)}]
     tier: Tier = "big" if _requires_big_llm(wio, decision) and is_configured("big") else "small"
     tier_llm = big_llm if tier == "big" else small_llm
     result=await tier_llm(messages, max_tokens=settings.llm_max_words * 4)
     if not result.available:
-        # Never fatal: an unconfigured or unreachable model must not cost the user an answer.
+        # Never fatal — an unconfigured or unreachable model must not cost the user an answer.
         return _result([], "success" if not is_configured(tier) else "partial",
                        errors=[] if not is_configured(tier) else [f"explanation unavailable: {result.error}"])
     text=(result.text or "").strip()
@@ -239,8 +221,7 @@ async def run_all_agents(ceos: list[CanonicalEvidenceObject], wio, user_context:
     results: list[AgentResult] = list(await asyncio.gather(forecast_task, warning_task, hist_task, obs_task, context_task))
     decision_result = await run_decision_agent(decision, [c.evidence_id for c in ceos])
     results.append(decision_result)
-    # The explanation is produced before review so the reviewer can check it, but stays last
-    # in the returned list: it is the only agent whose output is written by a model.
+    # Produced before review so the reviewer can check it, but stays last in the returned list — it's the only agent whose output is written by a model.
     explanation = await run_explanation_agent(wio, decision_result, lang)
     reviewer = await run_reviewer_agent([*results, explanation], wio, ceos)
     results.append(reviewer)

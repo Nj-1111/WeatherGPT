@@ -1,13 +1,4 @@
-"""Location resolution — public surface.
-
-Import path and error contract are unchanged from the previous single-module resolver
-(`resolve_location`, `extract_location`, `LocationNotFoundError`, `LocationAmbiguousError`),
-so app/main.py needs no import changes. The functions are now async because resolution
-performs network geocoding.
-
-Resolution order:
-    coordinates -> cache -> PIN code -> normalized place name -> providers -> rank -> ambiguity
-"""
+"""Location resolution — public surface. Order: coordinates -> cache -> PIN -> normalized place name -> providers -> rank -> ambiguity. Async because resolution performs network geocoding; the import path/error contract match the old single-module resolver, so app/main.py needs no changes."""
 from __future__ import annotations
 
 import logging
@@ -41,10 +32,7 @@ class LocationAmbiguousError(Exception):
         super().__init__(f"{message}: {raw} -> {candidates}")
 
 
-# Ordered fallback chain. Geoapify first when GEOAPIFY_API_KEY is set (see that
-# provider's own docstring for its unconfigured no-op behavior); Open-Meteo next
-# (keyless, structured, same vendor as the weather adapters); Nominatim last because it
-# covers Indian districts, states and historical aliases the other two miss.
+# Ordered fallback chain: Geoapify (if keyed) -> Open-Meteo (keyless) -> Nominatim (covers Indian districts/states/aliases the others miss).
 _GEOCODERS = (GeoapifyGeocoder(), OpenMeteoGeocoder(), NominatimGeocoder())
 _PINCODE_PROVIDER = IndiaPostProvider()
 
@@ -53,9 +41,7 @@ async def resolve_location(raw: str) -> ResolvedLocation:
     if not raw or not raw.strip():
         raise LocationNotFoundError(raw, "Location required but empty")
     if normalize.is_self_referential(raw):
-        # A backstop for when a caller (e.g. the guardrail's LLM extraction) hands this
-        # straight to the resolver without going through extract_place_phrase first — a
-        # free-text geocoder would otherwise fuzzy-match "near me" to some unrelated place.
+        # Backstop for callers that skip extract_place_phrase — a free-text geocoder would otherwise fuzzy-match "near me" to some unrelated place.
         raise LocationNotFoundError(raw, "No specific place was named")
 
     started = time.monotonic()

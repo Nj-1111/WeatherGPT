@@ -18,15 +18,13 @@ class ImdAdapter(WeatherSourceAdapter):
         base = settings.imd_api_base or "https://api.data.gov.in"
         if not key:
             raise RuntimeError("IMD_API_KEY missing — IMD source unavailable (ready, not mocked)")
-        # Example: city forecast endpoint — real IMD portal requires specific resource
-        # This adapter is ready but will only be used when credentials are set
+        # Example resource id — the real IMD portal requires a specific one per product.
         params = {"api-key": key, "format": "json", "limit": 10, **kwargs}
         response = await get_client().get(f"{base}/resource/3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69", params=params)
         response.raise_for_status()
         return response.json()
 
     def normalize(self, raw: Any, **kwargs) -> list:
-        # raw is IMD JSON records list
         product = kwargs.get("product", "forecast")
         if isinstance(raw, dict) and "records" in raw:
             records = raw["records"]

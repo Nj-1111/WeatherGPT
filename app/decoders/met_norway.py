@@ -1,9 +1,4 @@
-"""MET Norway locationforecast payload -> CEOs.
-
-The Norwegian Meteorological Institute runs its own model chain, so this is the one
-source in the registry that is genuinely independent of Open-Meteo. Without it,
-"sources agree" compares one vendor against itself.
-"""
+"""MET Norway locationforecast payload -> CEOs — the one source genuinely independent of Open-Meteo's own model chain; without it "sources agree" compares one vendor against itself."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -20,8 +15,7 @@ _INSTANT_FIELDS = (
     ("cloud_area_fraction", "cloud_cover", "%", "instant"),
 )
 
-# Later steps in the series are 6-hourly, so the 1-hour block is absent there. The
-# accumulation window is recorded per record; it is never assumed.
+# Later steps are 6-hourly (the 1-hour block is absent there) — the window is recorded per record, never assumed.
 _PRECIPITATION_BLOCKS = (("next_1_hours", 1), ("next_6_hours", 6))
 
 

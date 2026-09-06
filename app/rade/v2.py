@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.config import settings
+
 
 class Scenario(BaseModel):
     name: str
@@ -57,8 +59,7 @@ POLICIES: dict[str, dict[str, dict[str, float]]] = {
 
 
 def _domain(context: str) -> str | None:
-    """Only the decision context is matched. Including the user-context dict let a stored
-    fact containing "crop" flip the domain of an unrelated question."""
+    """Only the decision context is matched — including the user-context dict let a stored fact containing "crop" flip the domain of an unrelated question."""
     text = context.casefold()
     for domain, keywords in {"spray": ("spray", "pesticide"), "irrigate": ("irrigat", "sichai"), "harvest": ("harvest", "crop"), "marine": ("fish", "marine", "boat"), "travel": ("travel", "route", "drive")}.items():
         if any(keyword in text for keyword in keywords):
@@ -93,6 +94,52 @@ def _utility(action: str, scenario: Scenario, table: dict[str, dict[str, float]]
     return result
 
 
+def _marine_warning_active(wio) -> bool:
+    """wio.official_warning is a single collapsed slot that a marine alert can correctly lose to a higher-severity non-marine one, so RADE's marine domain reads its own signal straight off wio.evidence instead, which keeps every surviving CEO's variable regardless of which won that slot."""
+    return any(item.variable == "marine_warning" for item in wio.evidence)
+
+
+_CAUTION_PENALTY = 13
+_AVOID_PENALTY = 35
+
+
+def _marine_hazard_penalty(wio) -> tuple[float, list[str]]:
+    """Marine safety is dominated by sea state and official warnings, not the rain/wind table every other domain shares — returns a utility penalty (applied only to "go", never making "stay in" look better) plus the assumption strings explaining why.
+    Magnitudes are calibrated against POLICIES["marine"] (go=16/-45, delay=-4/12, avoid=-10/18): the caution penalty (13) still lets "go" win at default risk_lambda (0.6) but not the crew/boat-escalated one (0.85), a deliberately borderline case; the avoid penalty (35) always loses to "delay" regardless of risk tolerance, since a genuinely dangerous sea state is never a profile-dependent call."""
+    marine = wio.weather.marine or {}
+    wind = (wio.weather.wind or {}).get("value_kmh")
+    penalty = 0.0
+    notes: list[str] = []
+
+    wave = marine.get("wave_height_m")
+    if wave is not None:
+        if wave >= settings.rade_marine_wave_avoid_m:
+            penalty -= _AVOID_PENALTY
+            notes.append(f"wave height {wave}m is at or above the avoid threshold ({settings.rade_marine_wave_avoid_m}m)")
+        elif wave >= settings.rade_marine_wave_caution_m:
+            penalty -= _CAUTION_PENALTY
+            notes.append(f"wave height {wave}m is at or above the caution threshold ({settings.rade_marine_wave_caution_m}m)")
+
+    current = marine.get("current_velocity_kmh")
+    if current is not None and current >= settings.rade_marine_current_caution_kmh:
+        penalty -= _CAUTION_PENALTY
+        notes.append(f"current {current} km/h is at or above the caution threshold ({settings.rade_marine_current_caution_kmh} km/h)")
+
+    if wind is not None:
+        if wind >= settings.rade_marine_wind_avoid_kmh:
+            penalty -= _AVOID_PENALTY
+            notes.append(f"wind {wind} km/h is at or above the avoid threshold ({settings.rade_marine_wind_avoid_kmh} km/h)")
+        elif wind >= settings.rade_marine_wind_caution_kmh:
+            penalty -= _CAUTION_PENALTY
+            notes.append(f"wind {wind} km/h is at or above the caution threshold ({settings.rade_marine_wind_caution_kmh} km/h)")
+
+    if _marine_warning_active(wio):
+        penalty -= _AVOID_PENALTY
+        notes.append("a marine-flavored official warning is active")
+
+    return penalty, notes
+
+
 def decide(wio, user_context: dict[str, Any], decision_context: str = "") -> DecisionResult:
     domain = _domain(decision_context)
     scenarios, assumptions = generate_scenarios(wio)
@@ -110,17 +157,25 @@ def decide(wio, user_context: dict[str, Any], decision_context: str = "") -> Dec
     if wio.official_warning.active and wio.official_warning.severity in {"orange", "red"}:
         risk_lambda = max(risk_lambda, 1.0)
         assumptions.append("Risk aversion increased because an official high-severity warning is active.")
+    if domain == "marine" and str(user_context.get("boat_size", "")).casefold() == "small" \
+            and isinstance(user_context.get("crew_size"), int) and user_context["crew_size"] > 1:
+        # A small boat with >1 person is a downside-risk-tolerance fact (less margin, more people to rescue), not a hazard-magnitude one, so it escalates risk_lambda rather than the hazard penalty below.
+        risk_lambda = max(risk_lambda, 0.85)
+        assumptions.append("Risk aversion increased for a small boat with more than one person aboard.")
+    marine_penalty, marine_notes = _marine_hazard_penalty(wio) if domain == "marine" else (0.0, [])
+    assumptions.extend(marine_notes)
     ranked: list[DecisionAlternative] = []
     for action in POLICIES[domain]:
         outcomes = [(scenario.probability, _utility(action, scenario, POLICIES[domain])) for scenario in scenarios]
         expected = sum(probability * value for probability, value in outcomes)
         downside = sum(probability * abs(value) for probability, value in outcomes if value < 0)
+        if action == "go" and domain == "marine":
+            expected += marine_penalty
+            downside += abs(min(marine_penalty, 0.0))
         ranked.append(DecisionAlternative(action=action, expected_utility=expected, downside_risk=downside, score=expected - risk_lambda * downside))
     ranked.sort(key=lambda item: item.score, reverse=True)
     best = ranked[0]
-    # Kept above WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD (0.6): one source
-    # reporting alone is weaker than two agreeing, but it is not the unresolved case
-    # the big tier exists for.
+    # Kept above WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD (0.6): one source alone is weaker than two agreeing, but not the unresolved case the big tier exists for.
     confidence = {"full_agreement": 0.8, "single_source": 0.65}.get(wio.agreement.status, 0.55)
     return DecisionResult(recommended_action=best.action, alternatives=ranked[1:], expected_utility=best.expected_utility,
                           risk=best.downside_risk, confidence=float(confidence),

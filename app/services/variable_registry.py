@@ -1,8 +1,4 @@
-"""
-Variable registry — semantic normalization gate.
-Maps native field names → canonical variable + statistic + allowed accumulation windows.
-If semantics differ, values are NOT comparable (never averaged).
-"""
+"""Variable registry — semantic normalization gate mapping native field names to canonical variable/statistic/allowed accumulation windows; values with differing semantics are never comparable or averaged."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -57,17 +53,14 @@ DEFAULT_REGISTRY: dict[str, dict] = {
     "flood_warning": {"canonical": "flood_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
     "marine": {"canonical": "marine_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
     "marine_warning": {"canonical": "marine_warning", "statistic": "categorical", "unit": None, "evidence_class": ["warning"]},
-    # Declared in CanonicalVariable but previously absent here, so the gate rejected every
-    # record carrying them as an "unknown canonical variable" — silently discarding all of
-    # IMD's nowcast output, from the highest-authority source in the table.
+    # Previously absent here despite being declared in CanonicalVariable, so the gate silently discarded all of IMD's nowcast output as an "unknown canonical variable".
     "thunderstorm_probability": {"canonical": "thunderstorm_probability", "statistic": "probability", "unit": "%", "evidence_class": ["forecast", "nowcast"]},
     "thunderstorm_category": {"canonical": "thunderstorm_probability", "statistic": "categorical", "unit": None, "evidence_class": ["forecast", "nowcast", "warning"]},
     "wind_direction": {"canonical": "wind_direction", "statistic": "instant", "unit": "deg", "evidence_class": ["forecast", "observation", "reanalysis"]},
     "wdir": {"canonical": "wind_direction", "statistic": "instant", "unit": "deg"},
     # A summary row standing in for many ensemble members, not a measurement.
     "rainfall_distribution": {"canonical": "rainfall_distribution", "statistic": "instant", "unit": "members", "evidence_class": ["forecast"]},
-    # marine — wave/current/sea-surface data, distinct from marine_warning (categorical
-    # CAP alerts above): these are measured forecast values, not warnings.
+    # marine — wave/current/sea-surface measured forecast values, distinct from marine_warning's categorical CAP alerts above.
     "wave_height": {"canonical": "wave_height", "statistic": "instant", "unit": "m", "evidence_class": ["forecast"]},
     "wave_direction": {"canonical": "wave_direction", "statistic": "instant", "unit": "deg", "evidence_class": ["forecast"]},
     "wave_period": {"canonical": "wave_period", "statistic": "instant", "unit": "s", "evidence_class": ["forecast"]},
@@ -85,9 +78,7 @@ def validate_semantics(variable: str, statistic: str, unit: str | None,
                        evidence_class: str, accumulation_hours: float | None) -> tuple[bool, str]:
     """Validate a CEO against canonical semantics rather than trusting a decoder or an LLM."""
     if variable == "other":
-        # A deliberate escape hatch in CanonicalVariable. Accepted without a semantic
-        # guarantee, because silently discarding evidence a decoder declined to type is
-        # worse than admitting it unvalidated and letting the ranker weigh it.
+        # Deliberate escape hatch: admitting a decoder's untyped evidence unvalidated beats silently discarding it.
         return True, "unclassified variable accepted without semantic guarantee"
     entries = _BY_CANONICAL.get(variable)
     if not entries:

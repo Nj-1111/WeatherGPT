@@ -38,8 +38,7 @@ def _points(coordinates) -> list[tuple[float, float]]:
 
 
 def point_in_polygon(lat: float, lon: float, coordinates) -> bool:
-    """Ray casting over a [lon, lat] ring. Used to decide whether an official warning
-    actually covers the user, rather than assuming every warning is local."""
+    """Ray casting over a [lon, lat] ring, to test whether a warning actually covers the user rather than assuming every warning is local."""
     points = _points(coordinates)
     if len(points) < 3:
         return False
@@ -71,23 +70,7 @@ _MIN_PLACE_NAME_CHARS = 3
 
 def area_names_query(ev: CanonicalEvidenceObject, local_names: list[str],
                      state_names: list[str]) -> bool:
-    """Whether a warning's free-text area description names the query location.
-
-    The polygon test above is authoritative but usually unavailable: every alert in
-    NDMA's national CAP feed (checked live, 31 of 31) ships with an area *description*
-    and no polygon at all. That description does carry the district and state
-    ("Brahmaputra, Dhubri, Dhubri, Assam"), so it can still answer "is this the user's
-    warning" — imprecisely, but far better than assuming every national alert is local.
-
-    A state name only implies coverage when the alert is actually state-wide. IMD
-    publishes district-scoped alerts as "<district>, <district> districts of <state>"
-    (verified live), where the state is naming where those districts are, not claiming
-    the whole state — so a listed-districts alert must name the user's own district.
-
-    Whole-word matching only: substring matching would match "Assam" inside a longer
-    unrelated token. Some publishers emit unusable text ("tslg"), which matches nothing
-    and is treated as not covering the user.
-    """
+    """Whether a warning's free-text area description names the query location: the polygon test is usually unavailable (NDMA's feed ships descriptions, not polygons — 31/31 checked live), a bare state name only counts when the alert is state-wide (district-scoped alerts list the state as context, not scope — verified live), and matching is whole-word only to avoid substring false hits."""
     reference = (ev.geometry.reference if ev.geometry else None) or ""
     areas = ev.extra.get("areas") if isinstance(ev.extra, dict) else None
     haystack = " ".join([reference, *(areas if isinstance(areas, list) else [])]).casefold()

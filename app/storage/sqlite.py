@@ -1,9 +1,4 @@
-"""SQLite-backed MemoryStore and ConversationLog.
-
-`SqliteMemoryStore` is a thin delegation to `context/store.py`, which already handles
-connection lifetime, expiry-as-instants and schema creation. Wrapping rather than
-reimplementing keeps one set of SQL and one set of semantics.
-"""
+"""SQLite-backed MemoryStore and ConversationLog — SqliteMemoryStore is a thin delegation to context/store.py (already handles connection lifetime, expiry-as-instants, schema creation) so there's one set of SQL and semantics."""
 from __future__ import annotations
 
 import json
@@ -29,8 +24,7 @@ class SqliteMemoryStore:
 
 
 class SqliteConversationLog:
-    """Turn payloads are stored as JSON text: the log must not know a turn's shape, so the
-    router can add fields (a transcript, for one) without a migration here."""
+    """Turn payloads are stored as JSON text — the log must not know a turn's shape, so the router can add fields (e.g. a transcript) without a migration here."""
 
     def append(self, session_id: str, turn: dict[str, Any]) -> None:
         with closing(store._connect()) as conn, conn:
@@ -45,6 +39,5 @@ class SqliteConversationLog:
                 "SELECT payload FROM conversation_turns WHERE session_id=? ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-        # Newest-first from SQL so LIMIT takes the latest turns; reversed so callers read
-        # them in the order they were spoken.
+        # Newest-first from SQL so LIMIT takes the latest turns; reversed so callers read them in the order they were spoken.
         return [json.loads(payload) for (payload,) in reversed(rows)]

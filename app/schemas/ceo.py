@@ -1,7 +1,4 @@
-"""
-Canonical Evidence Object (CEO) — interoperability envelope.
-Preserves original source; never silently averages incompatible values.
-"""
+"""Canonical Evidence Object (CEO) — interoperability envelope; preserves original source, never silently averages incompatible values."""
 from __future__ import annotations
 
 import uuid

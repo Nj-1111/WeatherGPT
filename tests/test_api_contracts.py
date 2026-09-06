@@ -61,3 +61,60 @@ def test_temperature_only_answer_is_not_falsely_reported_as_no_evidence(monkeypa
     answer = response.json()["answer"]
     assert "No compatible weather evidence" not in answer
     assert "31.5" in answer
+
+
+def _marine_flow_evidence():
+    """A caution-band wave height (RADE recommends 'go' but flags a caution note) plus the
+    precipitation amount/probability RADE's scenario generator needs to score anything at
+    all — a bare amount with no probability record leaves scenarios empty and RADE defers."""
+    now = datetime.now(timezone.utc) + timedelta(days=1)
+    geometry = Geometry(type="Point", coordinates=[76.3, 9.9])
+    provenance = Provenance(original_source="fixture", transformations=["fixture test"])
+    return [
+        CanonicalEvidenceObject(source="OPEN_METEO", evidence_class="forecast", variable="precipitation_amount",
+                                value=0.0, unit="mm", statistic="accumulation", geometry=geometry,
+                                valid_from=now, valid_to=now, accumulation_window_hours=1, provenance=provenance),
+        CanonicalEvidenceObject(source="OPEN_METEO", evidence_class="forecast", variable="precipitation_probability",
+                                value=0.1, probability=0.1, unit="probability", statistic="probability",
+                                geometry=geometry, valid_from=now, valid_to=now, provenance=provenance),
+        CanonicalEvidenceObject(source="OPEN_METEO_MARINE", evidence_class="forecast", variable="wave_height",
+                                value=1.6, unit="m", statistic="instant", geometry=geometry,
+                                valid_from=now, valid_to=now, provenance=provenance),
+    ]
+
+
+def test_marine_persona_two_turn_flow_asks_and_uses_crew_answer(monkeypatch):
+    """Turn 1 (fishing, no crew/boat known): a caution-band wave height still recommends
+    'go' but appends a clarifying follow-up question and stores pending session state.
+    Turn 2 ("small boat, four of us", same session, no location repeated): the guardrail
+    is not re-invoked (the pending follow-up is consumed instead) and the crew/boat answer
+    flips the recommendation away from 'go'."""
+    async def fake_retrieve(*args, **kwargs):
+        return _marine_flow_evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
+    monkeypatch.setattr("app.main.retrieve", fake_retrieve)
+
+    guardrail_calls = 0
+    import app.main as main_module
+    real_run_guardrail = main_module.run_guardrail
+
+    async def counting_run_guardrail(text):
+        nonlocal guardrail_calls
+        guardrail_calls += 1
+        return await real_run_guardrail(text)
+    monkeypatch.setattr("app.main.run_guardrail", counting_run_guardrail)
+
+    body_1 = {"question": "should I go fishing tomorrow", "session_id": "s-marine-flow",
+              "location": {"latitude": 9.9, "longitude": 76.3}}
+    response_1 = asyncio.run(_post("/query", body_1))
+    assert response_1.status_code == 200, response_1.text
+    data_1 = response_1.json()
+    assert data_1["decision"]["recommended_action"] == "go"
+    assert "alone or with a crew" in data_1["answer"]
+    assert guardrail_calls == 1
+
+    body_2 = {"question": "small boat, four of us", "session_id": "s-marine-flow"}
+    response_2 = asyncio.run(_post("/query", body_2))
+    assert response_2.status_code == 200, response_2.text
+    data_2 = response_2.json()
+    assert data_2["decision"]["recommended_action"] != "go"
+    assert guardrail_calls == 1  # not re-invoked on turn 2 — the pending follow-up short-circuits it

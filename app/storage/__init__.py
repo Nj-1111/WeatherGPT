@@ -1,18 +1,12 @@
-"""Storage factory — the one place a backend is chosen.
-
-`SESSION_BACKEND` and `DB_BACKEND` exist so promotion is a config change. Only the
-in-process values are implemented today, and an unsupported value raises here at import
-rather than falling back silently: a switch that quietly ignores `redis` is worse than no
-switch, because it fails in production looking like it worked.
-"""
+"""Storage factory — the one place a backend is chosen. SESSION_BACKEND/DB_BACKEND exist so promotion is a config change; only the in-process values are implemented today, and an unsupported value raises loudly at import rather than silently falling back."""
 from __future__ import annotations
 
 from app.config import settings
-from app.storage.base import ConversationLog, MemoryStore, SessionStore
+from app.storage.base import ContextLimitExceeded, ConversationLog, MemoryStore, SessionStore
 from app.storage.memory import build_session_store
 from app.storage.sqlite import SqliteConversationLog, SqliteMemoryStore
 
-__all__ = ["ConversationLog", "MemoryStore", "SessionStore",
+__all__ = ["ContextLimitExceeded", "ConversationLog", "MemoryStore", "SessionStore",
            "conversation_log", "memory_store", "session_store"]
 
 _SUPPORTED_SESSION_BACKENDS = {"memory"}

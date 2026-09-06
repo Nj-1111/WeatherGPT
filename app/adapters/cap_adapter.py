@@ -1,16 +1,14 @@
-"""CAP adapter — official warnings, lifecycle aware.
-
-The configured feed is an RSS index whose items each link to a separate CAP alert
-document, so fetching is two-step. Pointing this at the index and decoding it directly
-yields zero warnings while appearing to succeed.
-"""
+"""CAP adapter — official warnings, lifecycle aware. The feed is an RSS index whose items each link to a separate CAP alert document, so fetching is two-step; decoding the index directly yields zero warnings while appearing to succeed."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-import xml.etree.ElementTree as ET
 from typing import Any
+from urllib.parse import urlparse
+
+import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from app.adapters.base import WeatherSourceAdapter
 from app.adapters.http import get_client
@@ -50,19 +48,15 @@ class CapAdapter(WeatherSourceAdapter):
 
     @staticmethod
     def _alert_links(payload: bytes) -> list[str]:
-        """Every <item><link> in a CAP index feed is that item's alert document by RSS
-        convention — regardless of URL shape. IMD's feed happens to use *.xml links;
-        NDMA's uses query-string FetchXMLFile?identifier=... links. Filtering on a
-        source-specific suffix silently dropped every NDMA link (verified against the
-        real feed: the linked document is a well-formed CAP 1.2 alert). Malformed links
-        that aren't real CAP XML are still caught downstream by normalize()'s
-        ET.ParseError handling, so accepting any http(s) link here is safe."""
+        """Every <item><link> is that item's alert doc by RSS convention regardless of URL shape (a suffix filter silently dropped NDMA's query-string links; malformed links still fail downstream in normalize()) — but only followed if it's on the feed's own host, so a compromised feed can't redirect this adapter to an arbitrary URL."""
         try:
             root = ET.fromstring(payload)
-        except ET.ParseError:
+        except (ET.ParseError, DefusedXmlException):
             return []
+        feed_host = urlparse(settings.cap_feed_url).hostname
         return [link.text.strip() for link in root.findall(".//item/link")
-                if link.text and link.text.strip().startswith("http")]
+                if link.text and link.text.strip().startswith("http")
+                and urlparse(link.text.strip()).hostname == feed_host]
 
     def normalize(self, raw: Any, **kwargs) -> list[CanonicalEvidenceObject]:
         if not raw:
@@ -72,7 +66,7 @@ class CapAdapter(WeatherSourceAdapter):
         for document in documents:
             try:
                 out.extend(decode_cap_xml(document))
-            except ET.ParseError as exc:
+            except (ET.ParseError, DefusedXmlException) as exc:
                 logger.warning("cap.alert_unparseable", extra={"error": str(exc)})
         return out
 

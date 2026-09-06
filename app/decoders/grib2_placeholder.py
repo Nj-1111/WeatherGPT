@@ -1,17 +1,7 @@
-"""
-GFS GRIB2 decoder — selection by param/level/lead + nearest-grid-cell spatial sampling.
+"""GFS GRIB2 decoder — selection by param/level/lead + nearest-grid-cell spatial sampling, called by grib2_adapter.py with a downloaded file path; needs eccodes/cfgrib/xarray (requirements-full.txt) or the adapter reports itself unavailable.
 
-Called by `app/adapters/grib2_adapter.py`, which fetches a filtered GRIB2 subset
-from NOAA NOMADS for a query lat/lon and passes the downloaded file path here.
-Needs eccodes/cfgrib/xarray (requirements-full.txt) — the adapter reports itself
-unavailable rather than failing the request when they're not installed.
-
-Also directly usable offline against a local GRIB2 file:
-    python -m app.decoders.grib2_placeholder --grib path/to/gfs.t00z.pgrb2.0p25.f006 --lat 21.14 --lon 79.08
-
-Install full stack:
-    pip install -r requirements-full.txt  # pulls cfgrib+eccodes
-    conda install -c conda-forge eccodes cfgrib   # if pip fails
+Standalone: python -m app.decoders.grib2_placeholder --grib <file> --lat <lat> --lon <lon>
+Install: pip install -r requirements-full.txt  (or: conda install -c conda-forge eccodes cfgrib)
 """
 from __future__ import annotations
 
@@ -30,12 +20,9 @@ def decode_grib2_file(path: str, lat: float, lon: float) -> list[CanonicalEviden
     except Exception as e:
         raise RuntimeError(f"GRIB2 decoder needs cfgrib+eccodes. Install requirements-full.txt. Detail: {e}") from e
 
-    # Real pattern: open per-parameter, not whole file
-    # Example: t2m + apcp
     out: list[CanonicalEvidenceObject] = []
     try:
         ds = xr.open_dataset(path, engine="cfgrib", filter_by_keys={"typeOfLevel": "heightAboveGround", "shortName": "2t"})
-        # spatial sampling — nearest grid cell
         point = ds.sel(latitude=lat, longitude=lon if lon<=180 else lon-360, method="nearest")
         val = float(point["t2m"].values) - 273.15  # K → C
         out.append(CanonicalEvidenceObject(

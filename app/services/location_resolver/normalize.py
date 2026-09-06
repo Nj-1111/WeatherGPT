@@ -1,18 +1,11 @@
-"""Deterministic text normalization. No NLP, no LLM — regex and a small alias table.
-
-Multilingual extraction is intentionally out of scope here; it can be added later as a
-separate layer that feeds normalized Romanized text into this module.
-"""
+"""Deterministic text normalization — regex and a small alias table, no NLP/LLM; multilingual extraction is out of scope, addable later as a layer feeding normalized Romanized text in."""
 from __future__ import annotations
 
 import re
 
 from app.services.time_parser import MONTH_PATTERN
 
-# Historical/colloquial renames. This is alias normalization, NOT a gazetteer — geocoding
-# providers supply the actual coordinates. Kept deliberately small; entries earn their
-# place only when providers genuinely fail on the old name (verified: "Bombay" resolves
-# to Bombay, New York on Open-Meteo without this).
+# Historical/colloquial renames — alias normalization, NOT a gazetteer (providers supply coordinates); kept small, entries earn their place only when providers fail on the old name (verified: "Bombay" -> Bombay, New York on Open-Meteo without this).
 ALIASES = {
     "bombay": "Mumbai",
     "calcutta": "Kolkata",
@@ -29,8 +22,7 @@ ALIASES = {
     "simla": "Shimla",
     "benares": "Varanasi",
     "banaras": "Varanasi",
-    # Abbreviations and common typos of major Indian cities. "chenai" is the exact
-    # live-verified typo that used to resolve to a French village.
+    # Abbreviations and common typos ("chenai" is a live-verified typo that used to resolve to a French village).
     "bnglr": "Bengaluru",
     "blr": "Bengaluru",
     "mum": "Mumbai",
@@ -49,8 +41,7 @@ _LEAD_PATTERNS = [
     r"\btemperature\s+(?:in|at|for|around|near)\b",
     r"\brain(?:fall)?\s+(?:in|at|for|around|near)\b",
     r"\b(?:will|is|does)\s+it\s+rain\s+(?:in|at|for|around|near)\b",
-    # "to" catches disaster/route phrasing ("cyclone coming to X", "route to Y") that the
-    # more specific weather-prefixed patterns above don't need to cover.
+    # "to" catches disaster/route phrasing ("cyclone coming to X", "route to Y") the more specific patterns above don't cover.
     r"\b(?:in|at|for|around|near|to)\b",
 ]
 
@@ -65,10 +56,7 @@ _TRAILING_TIME = re.compile(
     re.IGNORECASE,
 )
 
-# Trailing ABSOLUTE dates and clock times. A separate pattern because these carry digits
-# and usually arrive attached to a preposition, where the relative words above do not.
-# Without this the geocoder was handed "Rajkot on 2026-08-01" and answered 404 — after
-# two upstream calls and 1.26s, for a question the time parser understood perfectly.
+# Trailing ABSOLUTE dates/clock times — separate from _TRAILING_TIME because these carry digits and a preposition; without this "Rajkot on 2026-08-01" 404'd on the geocoder after 1.26s, for a question the time parser understood fine.
 _TRAILING_ABSOLUTE = re.compile(
     rf"\s*(?:\b(?:on|at|for|from|during|by|before|after)\s+)?(?:"
     rf"\d{{4}}-\d{{1,2}}-\d{{1,2}}"                                   # 2026-08-01
@@ -83,8 +71,7 @@ _TRAILING_ABSOLUTE = re.compile(
 # "at 6" is a time; a bare trailing number is not, so the preposition is required here.
 _TRAILING_BARE_HOUR = re.compile(r"\s*\bat\s+\d{1,2}\s*(?:o'?clock)?\s*$", re.IGNORECASE)
 
-# Removing "monday" from "Nagpur on monday" leaves the preposition stranded, and
-# "Nagpur on" geocodes no better than "Nagpur on monday" did.
+# Removing "monday" from "Nagpur on monday" leaves the preposition stranded — "Nagpur on" geocodes no better than "Nagpur on monday" did.
 _DANGLING_PREPOSITION = re.compile(r"\s+\b(?:on|at|for|from|during|by|before|after|in)\s*$",
                                    re.IGNORECASE)
 
@@ -93,10 +80,7 @@ _WHITESPACE = re.compile(r"\s+")
 
 
 def normalize_query(text: str) -> str:
-    """Collapse whitespace, strip edge punctuation, apply alias mapping.
-
-    Preserves internal commas — providers use "City, State" to disambiguate.
-    """
+    """Collapse whitespace, strip edge punctuation, apply alias mapping — preserves internal commas since providers use "City, State" to disambiguate."""
     if not text:
         return ""
     cleaned = _WHITESPACE.sub(" ", text).strip()
@@ -120,9 +104,7 @@ def cache_key(text: str) -> str:
     return _WHITESPACE.sub(" ", (text or "").strip().casefold())
 
 
-# Phrases that mean "wherever I am," not a real place name. A free-text geocoder has no way
-# to know these aren't places — a fuzzy match can still land on some unrelated foreign
-# village (verified live: "near me" -> Mme-Bafumen, Cameroon).
+# Phrases meaning "wherever I am," not a real place — a free-text geocoder can't tell and will fuzzy-match to some unrelated village (verified live: "near me" -> Mme-Bafumen, Cameroon).
 _SELF_REFERENTIAL_PHRASES = {
     "me", "near me", "my location", "my current location", "current location",
     "here", "my area", "my city", "nearby",
@@ -134,12 +116,7 @@ def is_self_referential(phrase: str) -> bool:
 
 
 def extract_place_phrase(text: str) -> str | None:
-    """Pull a probable place name out of a full question, deterministically.
-
-    "will it rain in Indore tomorrow" -> "Indore"
-    "will it rain tomorrow"           -> None
-    "weather near me"                 -> None (self-referential, not a place)
-    """
+    """Pull a probable place name out of a full question, deterministically (e.g. "will it rain in Indore tomorrow" -> "Indore"; "weather near me" -> None, self-referential)."""
     if not text:
         return None
     for pattern in _LEAD_PATTERNS:

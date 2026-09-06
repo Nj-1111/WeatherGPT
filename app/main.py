@@ -1,6 +1,7 @@
 """WeatherGPT modular-monolith API.  Weather truth is assembled before language synthesis."""
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -32,7 +33,7 @@ from app.schemas.api import (
     QueryRequestV1,
 )
 from app.schemas.location import ResolvedLocation
-from app.schemas.query import GuardrailAction, GuardrailDecision
+from app.schemas.query import GuardrailAction, GuardrailDecision, Persona
 from app.services import disambiguation, location_resolver, session_router
 from app.services.auth import key_scope, verify_api_key
 from app.services.cache import weather_cache
@@ -45,6 +46,7 @@ from app.services.location_resolver import (
     resolve_location,
 )
 from app.services.query_guardrail import (
+    _parse_crew_boat_answer,
     render_guardrail_message,
     resolve_confirmed_location,
     run_guardrail,
@@ -55,7 +57,7 @@ from app.services.semantic_gate import validated_evidence
 from app.services.temporal_align import filter_by_window
 from app.services.time_parser import parse_time_window
 from app.services.wio_builder import build_wio, filter_covered_warnings
-from app.storage import memory_store
+from app.storage import ContextLimitExceeded, memory_store
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -80,14 +82,60 @@ def _envelope(status: int, code: str, message: str, request_id: str, headers=Non
                         content={"error": {"code": code, "message": message, "details": {}, "request_id": request_id}})
 
 
+_TOO_LARGE_BODY = json.dumps({"error": {"code": "REQUEST_TOO_LARGE",
+                                        "message": "Request exceeds configured size limit",
+                                        "details": {}, "request_id": None}}).encode()
+
+
+class MaxBodySizeMiddleware:
+    """Bounds request body size by weighing actual bytes as they stream (not a trustable, omittable Content-Length header): past max_bytes, further chunks are dropped and the response is replaced with a 413. Registered as the outermost middleware (added first) so nothing downstream sees an oversized body."""
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        total = 0
+        too_large = False
+
+        async def limited_receive():
+            nonlocal total, too_large
+            if too_large:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > self.max_bytes:
+                    too_large = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        response_sent = False
+
+        async def guarded_send(message):
+            nonlocal response_sent
+            if not too_large:
+                await send(message)
+                return
+            if response_sent:
+                return
+            response_sent = True
+            await send({"type": "http.response.start", "status": 413,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": _TOO_LARGE_BODY, "more_body": False})
+
+        await self.app(scope, limited_receive, guarded_send)
+
+
 class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
         request_id_var.set(request_id)
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > settings.request_max_bytes:
-            return _envelope(413, "REQUEST_TOO_LARGE", "Request exceeds configured size limit", request_id)
         if settings.api_keys and request.url.path not in _UNGATED_PATHS:
             matched_key = verify_api_key(request.headers.get("Authorization"))
             if matched_key is None:
@@ -110,15 +158,14 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.request_max_bytes)
 app.add_middleware(RequestIDMiddleware)
 if settings.cors_origins:
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 def _scoped_id(request: Request, raw_id: str) -> str:
-    """Prefixes a client-supplied user_id/session_id with the calling key's scope, so one
-    caller's sloppy or reused id can never read/overwrite another caller's stored state.
-    No-op (raw id, unchanged) when the key gate is off, e.g. in tests/dev."""
+    """Prefixes a client-supplied user_id/session_id with the calling key's scope so one caller's sloppy/reused id can't read or overwrite another's stored state; no-op when the key gate is off (tests/dev)."""
     scope = getattr(request.state, "api_key_scope", None)
     return f"{scope}:{raw_id}" if scope else raw_id
 
@@ -149,10 +196,7 @@ async def _resolve_location(location: LocationInput | None, question: str,
                             extracted_phrase: str | None = None,
                             session_id: str | None = None) -> ResolvedLocation:
     try:
-        # A half-supplied coordinate used to be ignored, and the caller was then told to
-        # "provide a city, pincode, or latitude/longitude" — the thing they had just done.
-        # Only raised when nothing else can resolve the request, so a lat sent alongside a
-        # place name still resolves by name exactly as before.
+        # Raised only when nothing else can resolve the request (a lat alongside a place name still resolves by name) — a half-supplied coordinate used to just be ignored, telling the caller to "provide a city, pincode, or lat/lon", the thing they'd just done.
         if location and not location.raw and (location.latitude is None) != (location.longitude is None):
             missing = "longitude" if location.longitude is None else "latitude"
             raise WeatherGPTError("LOCATION_INCOMPLETE",
@@ -163,11 +207,7 @@ async def _resolve_location(location: LocationInput | None, question: str,
                                     confidence=1.0, source="request", normalized_name=location.raw, resolution_method="coordinates")
         if location and location.raw:
             return await resolve_location(location.raw)
-        # Prefer the LLM-extracted location phrase (already typo-corrected) over the
-        # deterministic regex extractor; fall back to it only when nothing was extracted.
-        # Routed through the module attribute (not the name imported into this module)
-        # so it resolves dynamically, same as extract_location()'s internal call —
-        # tests patch app.services.location_resolver.resolve_location, not this module's.
+        # Prefers the LLM-extracted (typo-corrected) phrase over the regex extractor, falling back only when nothing was extracted; routed through the module attribute so it resolves dynamically — tests patch app.services.location_resolver.resolve_location, not this module's.
         if extracted_phrase:
             return await location_resolver.resolve_location(extracted_phrase)
         extracted = await extract_location(question)
@@ -195,17 +235,10 @@ _GUARDRAIL_ERROR_CODES = {
 _AFFIRMATION_WORDS = ("yes", "yeah", "yep", "yup", "correct", "right", "haan", "ha", "sahi")
 
 
-async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> GuardrailDecision | None:
-    """Runs before any location/time/retrieval work. None means disabled — callers fall
-    back to the original regex-only, no-topic-gate behavior untouched.
-
-    A pending disambiguation (picking between LocationAmbiguousError's candidates) takes
-    priority over a pending VERIFY, then a pending VERIFY takes priority over a fresh
-    guardrail run — each is checked and consumed in turn so a session can only ever be
-    mid-way through one conversational follow-up at a time.
-    """
+async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> tuple[GuardrailDecision | None, dict[str, Any]]:
+    """Runs before location/time/retrieval; None means disabled (falls back to regex-only, no-topic-gate behavior). Second return value is a profile update (a crew/boat answer from a resumed marine follow-up) kept separate from GuardrailDecision, which stays intentionally minimal. Priority order for a session's one live conversational follow-up: pending disambiguation > pending VERIFY > pending marine follow-up > a fresh guardrail run."""
     if not settings.query_understanding_enabled:
-        return None
+        return None, {}
     if req.session_id and settings.follow_up_context_enabled:
         scoped = _scoped_id(request, req.session_id)
         pending_disambiguation = await session_router.consume_pending_disambiguation(scoped)
@@ -216,21 +249,26 @@ async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> 
                 location_str = (matched["name"]
                                 + (f", {matched['state']}" if matched.get("state") else "")
                                 + (f", {matched['country']}" if matched.get("country") else ""))
-                return resolve_confirmed_location(original_text, location_str)
+                return resolve_confirmed_location(original_text, location_str), {}
             # No confident match: drop it and treat this message as a fresh question.
         pending = await session_router.consume_pending_verification(scoped)
         if pending is not None and has_word(req.question.casefold(), _AFFIRMATION_WORDS):
             original_text, candidate = pending
-            return resolve_confirmed_location(original_text, candidate)
-    return await run_guardrail(req.question)
+            return resolve_confirmed_location(original_text, candidate), {}
+        pending_marine_text = await session_router.consume_pending_marine_followup(scoped)
+        if pending_marine_text is not None:
+            profile_update = _parse_crew_boat_answer(req.question)
+            decision = GuardrailDecision(original_text=pending_marine_text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
+                                         persona=Persona.MARINE, extraction_source="confirmed")
+            return decision, profile_update
+    return await run_guardrail(req.question), {}
 
 
 async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | tuple[Any, list, dict[str, Any], list, Any, Any]:
     started = time.monotonic()
     check_question_fast(req.question)
-    guard_decision = await _resolve_guardrail_decision(req, request)
-    # Caller override takes precedence; otherwise use the guardrail's detection of the
-    # question's own language; "en" only if neither is available.
+    guard_decision, guardrail_profile_update = await _resolve_guardrail_decision(req, request)
+    # Caller override takes precedence, else the guardrail's detected language, else "en".
     effective_lang = req.language or (guard_decision.detected_lang if guard_decision else None) or "en"
 
     if guard_decision is not None and guard_decision.action in _GUARDRAIL_ERROR_CODES:
@@ -247,10 +285,7 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
         return await _resolve_location(req.location, req.question, guard_decision.location,
                                        session_id=_scoped_id(request, req.session_id) if req.session_id else None)
 
-    # guard_decision is None (disabled) or ACCEPT_WEATHER_FULL — the full pipeline, unchanged.
-    # An explicit request-level location always wins, exactly as before — the follow-up
-    # short-circuit only ever fires when the caller supplied no location this turn either
-    # way (neither `location` nor a location phrase the guardrail found).
+    # guard_decision is None (disabled) or ACCEPT_WEATHER_FULL here; an explicit request-level location always wins — the follow-up short-circuit only fires when the caller gave no location this turn at all.
     has_explicit_location = bool(req.location and (req.location.raw or req.location.has_coordinates()))
     cached_context = None
     if (req.session_id and guard_decision is not None and not has_explicit_location
@@ -264,8 +299,7 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
             source="session_context", normalized_name=cached_context.resolved_location_name,
             resolution_method="follow_up_cache")
         if guard_decision and guard_decision.time:
-            # A new time phrase was given even though the location was carried over —
-            # re-derive the window rather than silently reusing a stale one.
+            # A new time phrase was given even though the location was carried over — re-derive the window rather than silently reusing a stale one.
             valid_from, valid_to, horizon, time_confidence = parse_time_window(
                 guard_decision.time, tz=req.timezone or location.timezone)
         else:
@@ -283,7 +317,8 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     if req.session_id and settings.follow_up_context_enabled:
         await session_router.store_context(_scoped_id(request, req.session_id), location, valid_from, valid_to, horizon, time_confidence)
 
-    plan = build_retrieval_plan(req.question, horizon)
+    persona = guard_decision.persona.value if guard_decision else Persona.NONE.value
+    plan = build_retrieval_plan(req.question, horizon, persona=persona)
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
     evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))
     evidence, semantic_rejections = validated_evidence(evidence)
@@ -292,17 +327,31 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     evidence_store.add_many(evidence)
     wio = build_wio(req.question, resolved_location, valid_from, valid_to, horizon, evidence, lang=effective_lang)
     wio.query.intent = plan.decision_context or horizon
+    wio.query.persona = persona
     wio.query.resolved_location["time_resolution_confidence"] = time_confidence
     wio.query.resolved_location["retrieval_plan"] = plan.model_dump()
     wio.query.resolved_location["retrieval_status"] = retrieval_status
     if semantic_rejections:
         wio.agreement.notes = (wio.agreement.notes + " ").strip() + "Some incompatible evidence was rejected."
     profile = dict(req.profile)
+    if guardrail_profile_update:
+        profile.update(guardrail_profile_update)
     if req.user_id:
         profile.update({key: value["value"] for key, value in memory_store.get_context(_scoped_id(request, req.user_id)).items() if key not in profile})
     decision = None
-    if plan.decision_context:
-        decision = decide(wio, profile, getattr(req, "decision_type", None) or req.question)
+    # A persona=marine query must always get a real go/delay/avoid call even when retrieval_planner's narrower keyword match never set plan.decision_context (e.g. the guardrail's broader "beach/coastal" phrasing) — else the feature silently misses the queries persona detection was widened to catch.
+    persona_forces_marine = guard_decision is not None and guard_decision.persona == Persona.MARINE
+    if plan.decision_context or persona_forces_marine:
+        decision_type = getattr(req, "decision_type", None) or plan.decision_context or "marine"
+        decision = decide(wio, profile, decision_type)
+        if (decision_type == "marine" and decision.recommended_action == "go"
+                and any("caution threshold" in note for note in decision.assumptions)
+                and "crew_size" not in profile and "boat_size" not in profile
+                and req.session_id and settings.follow_up_context_enabled):
+            await session_router.store_pending_marine_followup(_scoped_id(request, req.session_id), req.question)
+            wio.query.resolved_location["marine_followup_prompt"] = (
+                "Are you going out alone or with a crew, and is it a small boat or a "
+                "larger one? Conditions could change the recommendation.")
     agents = await run_all_agents(evidence, wio, profile, wio.query.lang, decision)
     reviewer = next((result for result in agents if result.agent_name == "reviewer"), None)
     if reviewer is None or reviewer.status != "success":
@@ -314,6 +363,15 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
 
 def _synthesize(wio, decision=None, agents=None) -> str:
     parts: list[str] = []
+    # Marine safety framing must not depend on the LLM being configured, so it's built here from data already computed (wio, decision) and appears even on the fully deterministic path (LLM_ENABLED=false).
+    if wio.query.persona == "marine" and decision is not None and wio.weather.marine:
+        wave = wio.weather.marine.get("wave_height_m")
+        lead = "Don't go out" if decision.recommended_action in {"avoid", "delay"} else "Conditions look manageable"
+        if wave is not None:
+            lead += f" — wave height up to {wave} m"
+        if wio.official_warning.active:
+            lead += ", an official warning is active"
+        parts.append(lead + ".")
     if wio.weather.summary:
         parts.append(wio.weather.summary)
     else:
@@ -330,6 +388,9 @@ def _synthesize(wio, decision=None, agents=None) -> str:
                         for claim in result.claims if claim.claim == "explanation"), None)
     if explanation:
         parts.append(str(explanation))
+    marine_followup_prompt = wio.query.resolved_location.get("marine_followup_prompt")
+    if marine_followup_prompt:
+        parts.append(marine_followup_prompt)
     return " ".join(parts)
 
 
@@ -410,8 +471,11 @@ async def get_evidence(evidence_id: str):
 @app.post("/context")
 @app.post("/api/v1/context")
 async def post_context(req: ContextRequest, request: Request):
-    memory_store.upsert_fact(_scoped_id(request, req.user_id), req.fact.fact, req.fact.value, req.fact.confidence, req.fact.source, req.fact.confirmed,
-                req.fact.expiry.isoformat() if req.fact.expiry else None)
+    try:
+        memory_store.upsert_fact(_scoped_id(request, req.user_id), req.fact.fact, req.fact.value, req.fact.confidence, req.fact.source, req.fact.confirmed,
+                    req.fact.expiry.isoformat() if req.fact.expiry else None)
+    except ContextLimitExceeded as exc:
+        raise WeatherGPTError("CONTEXT_LIMIT_EXCEEDED", str(exc), {"user_id": req.user_id}, 422) from exc
     return {"status": "ok", "user_id": req.user_id, "fact": req.fact.fact}
 
 

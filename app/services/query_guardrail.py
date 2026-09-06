@@ -1,16 +1,4 @@
-"""Guardrail decision funnel: classify a raw query into one strict action, in one LLM call.
-
-Replaces a bare is_weather_related boolean with a real dispatch key (GuardrailAction) so
-"accept, but only the location resolver is needed" is a decision the pipeline can act on,
-not metadata nobody reads. The LLM applies a fixed decision-tree checklist (see
-_SYSTEM_PROMPT) rather than judging on its own; the user-facing text for every
-non-ACCEPT action is rendered by render_guardrail_message from a fixed template, never
-composed by the LLM.
-
-Wired into app/main.py's _weather_request as the sole topic/dispatch gate. Degrades to a
-deterministic fallback when the LLM is unavailable or returns unparseable output, for the
-same reason as every other LLM call in this app: an outage must never take the API down.
-"""
+"""Guardrail decision funnel: one LLM call classifies a raw query into one strict action (GuardrailAction, replacing a bare is_weather_related boolean) via a fixed decision-tree checklist (_SYSTEM_PROMPT), never the LLM's own judgment — non-ACCEPT user-facing text always comes from render_guardrail_message's fixed templates, never LLM prose. Wired into app/main.py's _weather_request as the sole topic/dispatch gate; degrades to a deterministic fallback on any LLM outage or unparseable output."""
 from __future__ import annotations
 
 import json
@@ -19,9 +7,9 @@ import re
 
 from app.config import settings
 from app.llm.client import small_llm
-from app.orchestrator.retrieval_planner import has_word
+from app.orchestrator.retrieval_planner import _DECISION_KEYWORDS, _MARINE_WORDS, has_word
 from app.prompts.loader import load_prompt
-from app.schemas.query import ClarifyReason, GuardrailAction, GuardrailDecision
+from app.schemas.query import ClarifyReason, GuardrailAction, GuardrailDecision, Persona
 from app.services.cache import TTLCache
 from app.services.guardrail import TOPIC_WORDS, check_question
 from app.services.location_resolver.normalize import extract_place_phrase
@@ -33,29 +21,24 @@ _SYSTEM_PROMPT = load_prompt("guardrail")
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _VALID_ACTIONS = {member.value for member in GuardrailAction}
 _VALID_CLARIFY_REASONS = {member.value for member in ClarifyReason}
+_VALID_PERSONAS = {member.value for member in Persona}
 
-# Deterministic-fallback-only signal: "coordinates of X" phrasing without any weather
-# word alongside it. Kept separate from guardrail.TOPIC_WORDS so a question that
-# mentions both ("weather and coordinates of Pune") still reads as a weather request.
+# Fallback's marine-persona signal matches retrieval_planner's need_marine condition exactly, so it never fires without retrieval also planning marine data; the LLM's own rule is deliberately broader (beach/coastal phrasing too), covered separately by build_retrieval_plan's `persona` param.
+_PERSONA_MARINE_WORDS = _DECISION_KEYWORDS["marine"] + _MARINE_WORDS
+
+# Deterministic-fallback-only signal: "coordinates of X" with no weather word — kept separate from guardrail.TOPIC_WORDS so "weather and coordinates of Pune" still reads as a weather request.
 _LOCATION_ONLY_WORDS = (
     "coordinates", "coordinate", "latitude", "longitude", "geocode", "pincode",
     "pin code",
 )
 
-# extract_place_phrase's patterns are tuned for weather phrasing ("weather in X"); a
-# location-only ask ("coordinates of X") needs its own narrow lead pattern instead of
-# broadening that shared regex, which free words like "of" would make trigger-happy for
-# every other caller.
+# extract_place_phrase's patterns are tuned for "weather in X"; "coordinates of X" needs its own narrow lead pattern rather than broadening that shared regex, which "of" would make trigger-happy for every other caller.
 _LOCATION_ONLY_LEAD = re.compile(
     r"\b(?:coordinates?|latitude|longitude|geocode|pincode|pin\s*code)s?\s+(?:of|for)\s+",
     re.IGNORECASE,
 )
 
-# Disaster types with no backing data source in this app — checked before the normal
-# topic gate so these get an honest UNSUPPORTED_TOPIC instead of being silently answered
-# with irrelevant generic weather data (or bluntly rejected as if off-topic, which they
-# aren't). Distinct from guardrail.TOPIC_WORDS' cyclone/flood/storm, which ARE backed by
-# CAP and stay on the normal accept path.
+# Disaster types with no backing data source — checked before the topic gate so these get an honest UNSUPPORTED_TOPIC rather than irrelevant weather data or a bare off-topic rejection; distinct from TOPIC_WORDS' cyclone/flood/storm, which ARE backed by CAP.
 _UNSUPPORTED_DISASTER_WORDS = ("earthquake", "tsunami", "wildfire", "landslide", "volcano",
                               "volcanic", "drought")
 
@@ -87,6 +70,10 @@ def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
     clarify_reason = data.get("clarify_reason")
     if clarify_reason not in _VALID_CLARIFY_REASONS:
         clarify_reason = None
+    # persona is additive, not load-bearing like action: a right-action-wrong-persona LLM output shouldn't lose the whole decision to a fallback re-run.
+    persona = data.get("persona")
+    if persona not in _VALID_PERSONAS:
+        persona = Persona.NONE.value
     try:
         return GuardrailDecision(
             original_text=raw_text,
@@ -99,6 +86,7 @@ def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
             confidence=float(data.get("confidence", 0.0)),
             extraction_source="llm",
             detected_lang=(data.get("detected_lang") or "en").strip() or "en",
+            persona=Persona(persona),
         )
     except (TypeError, ValueError):
         logger.warning("query_guardrail.invalid_fields", extra={"raw_length": len(llm_text)})
@@ -106,13 +94,7 @@ def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
 
 
 def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
-    """Used when the LLM is unavailable or returns unparseable output.
-
-    Deliberately never returns CLARIFY(garbled_input) or VERIFY — telling "garbled" apart
-    from "off-topic", or judging a name ambiguous, needs real language understanding, not
-    a keyword match. CLARIFY(no_location) and UNSUPPORTED_TOPIC are the two exceptions:
-    both are still binary keyword checks, not a graded read.
-    """
+    """Used when the LLM is unavailable or returns unparseable output. Never returns CLARIFY(garbled_input) or VERIFY — those need real language understanding, not a keyword match; CLARIFY(no_location) and UNSUPPORTED_TOPIC are the exceptions since both are still binary keyword checks."""
     text = (raw_text or "").strip()
     casefolded = text.casefold()
     unsupported = next((word for word in _UNSUPPORTED_DISASTER_WORDS if has_word(casefolded, (word,))), None)
@@ -135,13 +117,12 @@ def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
     except Exception:
         is_weather_related = False
     action = GuardrailAction.ACCEPT_WEATHER_FULL if is_weather_related else GuardrailAction.REJECT_OFF_TOPIC
+    persona = Persona.MARINE if action == GuardrailAction.ACCEPT_WEATHER_FULL and has_word(casefolded, _PERSONA_MARINE_WORDS) else Persona.NONE
     return GuardrailDecision(original_text=text, action=action, location=location,
-                             confidence=1.0, extraction_source="deterministic_fallback")
+                             confidence=1.0, extraction_source="deterministic_fallback", persona=persona)
 
 
-# One LLM call per distinct question rather than per request. A fallback decision is
-# deliberately never stored: it is a degraded read of the query and must not outlive the
-# outage that produced it.
+# One LLM call per distinct question, not per request. A fallback decision is never stored — it's a degraded read and must not outlive the outage that produced it.
 _decision_cache = TTLCache(settings.guardrail_cache_max_entries)
 
 
@@ -167,14 +148,42 @@ async def run_guardrail(raw_text: str) -> GuardrailDecision:
 
 
 def resolve_confirmed_location(original_text: str, confirmed_location: str) -> GuardrailDecision:
-    """A VERIFY candidate the user just confirmed on the next turn. The original VERIFY
-    classification stopped at rule 5 without ever deciding location-only vs weather-full
-    (rules 6/7) — same branch _deterministic_fallback applies, just with the location
-    already known instead of re-extracted."""
-    action = (GuardrailAction.ACCEPT_LOCATION_ONLY if _is_location_only_phrasing(original_text.casefold())
+    """A VERIFY candidate the user just confirmed next turn — the original classification stopped at rule 5 without deciding location-only vs weather-full, so the same branch _deterministic_fallback applies, just with the location already known."""
+    casefolded = original_text.casefold()
+    action = (GuardrailAction.ACCEPT_LOCATION_ONLY if _is_location_only_phrasing(casefolded)
              else GuardrailAction.ACCEPT_WEATHER_FULL)
+    persona = Persona.MARINE if action == GuardrailAction.ACCEPT_WEATHER_FULL and has_word(casefolded, _PERSONA_MARINE_WORDS) else Persona.NONE
     return GuardrailDecision(original_text=original_text, action=action, location=confirmed_location,
-                             confidence=1.0, extraction_source="confirmed")
+                             confidence=1.0, extraction_source="confirmed", persona=persona)
+
+
+_SOLO_WORDS = ("alone", "solo", "single", "myself")
+_SMALL_BOAT_WORDS = ("small", "dinghy", "kayak", "canoe")
+_LARGE_BOAT_WORDS = ("large", "big", "trawler")
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                "eight": 8, "nine": 9, "ten": 10}
+
+
+def _parse_crew_boat_answer(text: str) -> dict:
+    """A one-sentence answer to "alone or with a crew? small boat or large?" — a fixed keyword parse, same invariant as the rest of this module; unrecognized text yields an empty update rather than guessing."""
+    casefolded = text.casefold()
+    update: dict[str, object] = {}
+    if has_word(casefolded, _SOLO_WORDS):
+        update["crew_size"] = 1
+    else:
+        digit_match = re.search(r"\b(\d+)\b", casefolded)
+        if digit_match:
+            update["crew_size"] = int(digit_match.group(1))
+        else:
+            for word, value in _NUMBER_WORDS.items():
+                if has_word(casefolded, (word,)):
+                    update["crew_size"] = value
+                    break
+    if has_word(casefolded, _SMALL_BOAT_WORDS):
+        update["boat_size"] = "small"
+    elif has_word(casefolded, _LARGE_BOAT_WORDS):
+        update["boat_size"] = "large"
+    return update
 
 
 _CLARIFY_MESSAGES: dict[ClarifyReason, str] = {
@@ -184,9 +193,7 @@ _CLARIFY_MESSAGES: dict[ClarifyReason, str] = {
 
 
 def render_guardrail_message(decision: GuardrailDecision) -> str | None:
-    """The fixed, deterministic wording for every non-ACCEPT action. Returns None for
-    ACCEPT_LOCATION_ONLY/ACCEPT_WEATHER_FULL — those continue into the pipeline instead
-    of returning a message here."""
+    """Fixed, deterministic wording for every non-ACCEPT action; returns None for ACCEPT_LOCATION_ONLY/ACCEPT_WEATHER_FULL, which continue into the pipeline instead."""
     if decision.action == GuardrailAction.REJECT_OFF_TOPIC:
         return ("I can only answer questions about weather, marine/fishing conditions, "
                 "mountain weather, weather-driven disaster risk, travel planning, or location.")

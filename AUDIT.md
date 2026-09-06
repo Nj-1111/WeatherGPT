@@ -1,5 +1,8 @@
 # AUDIT.md — pre-production teardown, 2026-09-05
 
+**Current open/closed status for every finding below is tracked in `FIXES.md`** — this
+file is the detailed narrative behind each one, not the live index.
+
 Scope: `app/`, against the coding rules in `CLAUDE.md`. Storage (`app/storage/**`) excluded
 by request. `BUG.md`'s existing findings are not repeated here. Everything below was read or
 executed, never inferred; anything unverified says so.

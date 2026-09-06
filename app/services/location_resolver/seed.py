@@ -1,10 +1,4 @@
-"""Offline seed data — the last resort when every geocoding provider is unreachable.
-
-These are the locations the system supported before geocoding existed. They are no longer
-the location database; they exist so an offline/air-gapped demo still resolves its
-core cities instead of failing every request. Nothing is fabricated: an unknown place
-with no provider reachable still raises LocationNotFoundError.
-"""
+"""Offline seed data — last resort when every geocoding provider is unreachable; not the location database, just enough for an offline/air-gapped demo to resolve its core cities instead of failing every request (an unknown place still raises LocationNotFoundError)."""
 from __future__ import annotations
 
 GAZETTEER = {
@@ -18,8 +12,7 @@ GAZETTEER = {
     "malegaon": {"lat": 20.5579, "lon": 74.5287, "district": "Nashik", "state": "Maharashtra"},
 }
 
-# Kept here rather than in the resolver's hot path — PIN resolution now goes through
-# the India Post provider; these 7 are only the offline fallback.
+# PIN resolution normally goes through the India Post provider; these 7 are only the offline fallback.
 SEED_PINCODES = {
     "440001": {"lat": 21.1458, "lon": 79.0882, "district": "Nagpur", "state": "Maharashtra"},
     "400001": {"lat": 18.9388, "lon": 72.8347, "district": "Mumbai", "state": "Maharashtra"},
@@ -32,8 +25,7 @@ SEED_PINCODES = {
 
 
 def seed_place(query: str) -> dict | None:
-    """Exact-match lookup against the offline gazetteer. No substring matching —
-    substring matching is what made 'pune mumbai' ambiguous and 'Indore' unresolvable."""
+    """Exact-match lookup against the offline gazetteer — substring matching is what made 'pune mumbai' ambiguous and 'Indore' unresolvable."""
     key = (query or "").split(",")[0].strip().casefold()
     entry = GAZETTEER.get(key)
     if entry:

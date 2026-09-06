@@ -96,3 +96,18 @@ def test_fishing_decision_also_pulls_marine_data():
     plan = build_retrieval_plan("should I go fishing tomorrow", "short")
     assert plan.decision_context == "marine"
     assert "wave_height" in plan.variables
+
+
+def test_marine_persona_alone_forces_marine_data_with_no_keyword_match():
+    """The guardrail's persona classification is deliberately broader than this module's
+    own keyword sets (it also covers beach/coastal phrasing) — persona=marine must fetch
+    marine data even when the question text matches none of the marine keyword tuples."""
+    plan = build_retrieval_plan("planning a trip to the beach this weekend", "short", persona="marine")
+    assert plan.decision_context is None  # no decision-domain keyword present
+    assert "wave_height" in plan.variables
+    assert "OPEN_METEO_MARINE" in plan.sources
+
+
+def test_persona_none_does_not_force_marine_data():
+    plan = build_retrieval_plan("will it rain tomorrow", "short", persona="none")
+    assert "wave_height" not in plan.variables

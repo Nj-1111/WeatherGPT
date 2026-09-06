@@ -37,6 +37,5 @@ class LocationProvider(Protocol):
     name: str
 
     async def search(self, query: str) -> list[LocationCandidate]:
-        """Return candidates for a normalized query. Must return [] rather than raise
-        on 'no match'; may raise on transport failure (the resolver isolates it)."""
+        """Return candidates for a normalized query — [] on 'no match', may raise on transport failure (the resolver isolates it)."""
         ...

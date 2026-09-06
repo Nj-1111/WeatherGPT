@@ -10,11 +10,7 @@ _PINCODE_INLINE = re.compile(r"\b(\d{6})\b")
 
 
 def parse_coordinates(text: str, inline: bool = False) -> tuple[float, float] | None:
-    """Return (lat, lon) if the text is/contains a valid coordinate pair, else None.
-
-    Returns None for out-of-range values rather than raising — the caller decides
-    whether an out-of-range pair is a hard error or just 'not coordinates'.
-    """
+    """Return (lat, lon) if the text is/contains a valid coordinate pair, else None — out-of-range values return None too, so the caller decides if that's an error or just 'not coordinates'."""
     if not text:
         return None
     match = (_COORD_INLINE.search(text) if inline else _COORD_EXACT.match(text))
@@ -30,11 +26,7 @@ def parse_coordinates(text: str, inline: bool = False) -> tuple[float, float] | 
 
 
 def looks_like_coordinates(text: str) -> bool:
-    """True when the text is shaped like a coordinate pair, valid range or not.
-
-    Lets the resolver reject "91.0, 200.0" as invalid coordinates instead of
-    silently handing it to a geocoder as a place name.
-    """
+    """True when the text is shaped like a coordinate pair, valid range or not — lets the resolver reject "91.0, 200.0" instead of handing it to a geocoder as a place name."""
     return bool(text and _COORD_EXACT.match(text))
 
 

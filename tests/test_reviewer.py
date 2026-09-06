@@ -138,6 +138,20 @@ def test_prose_grounding_ignores_bare_numerals():
     assert check_prose_grounding("Conditions over the next 24 hours across 3 sources.", wio) == []
 
 
+def test_2_5_prose_grounding_converts_imperial_units_before_comparing():
+    """§2.5: the regex used to only recognise mm/%/C/km/h, so a number restated in mph,
+    inches, or Fahrenheit slipped past the check entirely rather than being verified."""
+    wio = _wio(_evidence())
+    # Grounded: wind is 5.0 m/s -> 18.0 km/h; temperature is 31.5 C; rain totals 2.4 mm.
+    assert check_prose_grounding("Winds around 11.18 mph.", wio) == []
+    assert check_prose_grounding("A high near 88.7°F.", wio) == []
+    assert check_prose_grounding("About 0.094 inches of rain.", wio) == []
+    # Fabricated numbers in those same units must still be caught, not silently ignored.
+    assert check_prose_grounding("Winds around 50 mph.", wio) == ["50 mph"]
+    assert check_prose_grounding("A high near 120°F.", wio) == ["120 °F"]
+    assert check_prose_grounding("About 5 inches of rain.", wio) == ["5 inches"]
+
+
 def test_explanation_agent_is_inert_without_an_llm():
     wio = _wio(_evidence())
     result = asyncio.run(run_explanation_agent(wio, None))
@@ -362,3 +376,61 @@ def test_fact_sheet_never_carries_the_users_raw_question():
     assert injection not in sheet
     assert "ignore the fact sheet" not in sheet
     assert "Intent: spray" in sheet
+
+
+def _marine_ceo(variable, value, hour=0, *, unit="m", statistic="instant"):
+    valid = START + timedelta(hours=hour)
+    return CanonicalEvidenceObject(
+        source="OPEN_METEO_MARINE", evidence_class="forecast", variable=variable, value=value,
+        unit=unit, statistic=statistic, geometry=Geometry(type="GridCell", coordinates=[75.86, 22.72]),
+        issued_at=START, valid_from=valid, valid_to=valid,
+        provenance=Provenance(original_source="OPEN_METEO_MARINE"))
+
+
+def test_fact_sheet_includes_marine_block_only_for_marine_persona():
+    from app.agents.orchestrator import _fact_sheet
+
+    marine_ceos = [_marine_ceo("wave_height", 1.8)]
+    wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", marine_ceos)
+    wio.query.persona = "marine"
+    sheet = _fact_sheet(wio, None)
+    assert "Marine conditions" in sheet
+    assert "1.8" in sheet
+
+
+def test_fact_sheet_omits_marine_block_for_non_marine_persona():
+    from app.agents.orchestrator import _fact_sheet
+
+    marine_ceos = [_marine_ceo("wave_height", 1.8)]
+    wio = build_wio("wave height at Chennai", LOCATION, START, END, "short", marine_ceos)
+    assert wio.query.persona == "none"
+    sheet = _fact_sheet(wio, None)
+    assert "Marine conditions" not in sheet
+
+
+def test_panel_evidence_ids_includes_marine_so_marine_only_query_gets_an_explanation(monkeypatch):
+    """A marine-only WIO (no rain/temperature/wind evidence) used to produce an empty
+    panel_ids list, and run_explanation_agent returns early on that — silently skipping the
+    explanation for exactly the queries the marine panel exists to describe."""
+    from app.agents.orchestrator import _panel_evidence_ids
+
+    marine_ceos = [_marine_ceo("wave_height", 1.8)]
+    wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", marine_ceos)
+    assert wio.weather.rain is None and wio.weather.temperature is None and wio.weather.wind is None
+    ids = _panel_evidence_ids(wio)
+    assert ids and set(ids) == set(wio.weather.marine["evidence_ids"])
+
+
+def test_explanation_prompt_uses_marine_tone_for_marine_persona(monkeypatch):
+    captured = {}
+
+    async def fake_small_llm(messages, **kwargs):
+        captured["system"] = messages[0]["content"]
+        return LLMResult(tier="small", available=True, text="Manageable conditions today.")
+    monkeypatch.setattr("app.agents.orchestrator.small_llm", fake_small_llm)
+
+    marine_ceos = [_marine_ceo("wave_height", 1.8)]
+    wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", marine_ceos)
+    wio.query.persona = "marine"
+    asyncio.run(run_explanation_agent(wio, None))
+    assert settings.rade_marine_tone_directive in captured["system"]

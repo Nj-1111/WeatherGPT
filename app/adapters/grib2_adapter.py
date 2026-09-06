@@ -1,15 +1,4 @@
-"""GFS GRIB2 Adapter — fetches a filtered 0.25deg GRIB2 subset from NOAA NOMADS.
-
-Decoding needs eccodes+cfgrib+xarray (requirements-full.txt); if they're not
-installed, this adapter reports itself unavailable rather than failing the
-whole request (matches every other adapter's isolation contract).
-
-NOAA publishes each GFS cycle (00/06/12/18Z) with a real-world latency —
-data for a given cycle typically isn't on NOMADS until ~4-5h after the
-cycle's nominal time. `_candidate_cycles` picks the newest cycle that's
-plausibly published, then falls back to progressively older cycles on
-fetch failure (a not-yet-published cycle 404s rather than hanging).
-"""
+"""GFS GRIB2 Adapter — fetches a filtered 0.25deg subset from NOAA NOMADS; needs eccodes+cfgrib+xarray (requirements-full.txt) or reports itself unavailable. NOAA publishes each cycle (00/06/12/18Z) ~4-5h late, so `_candidate_cycles` picks the newest plausibly-published cycle and falls back to older ones on fetch failure (a not-yet-published cycle 404s rather than hanging)."""
 from __future__ import annotations
 
 import os

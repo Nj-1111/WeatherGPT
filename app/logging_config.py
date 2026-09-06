@@ -1,8 +1,4 @@
-"""Logging setup.  Nothing else in the app calls basicConfig.
-
-Every log line carries the request ID so a production incident can be traced across
-the pipeline. Set WEATHERGPT_LOG_JSON=true for machine-readable output.
-"""
+"""Logging setup — nothing else in the app calls basicConfig. Every log line carries the request ID for tracing; set WEATHERGPT_LOG_JSON=true for machine-readable output."""
 from __future__ import annotations
 
 import json

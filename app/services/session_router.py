@@ -1,18 +1,4 @@
-"""Conversational follow-up short-circuit.
-
-A follow-up like "and how soon will that rain stop?" names no location — today that
-means extract_location(question) finds nothing and the request 422s with
-LOCATION_REQUIRED, even though the location was just resolved one turn ago. This module
-lets main.py reuse that resolution (and the time window it was computed for) instead of
-either failing or re-running geocoding.
-
-Backed by InMemorySessionStore — the same bounded TTL-cache primitive app/storage/memory.py
-already wraps around TTLCache — rather than a bare dict, so this doesn't reintroduce the
-unbounded-growth failure mode the 2026-09 hardening pass fixed elsewhere (see CLAUDE.md).
-A *separate* instance from app/storage's `session_store` singleton: follow-up context needs
-its own short, fixed TTL (a stale location silently answering a new question is worse than
-a cache miss), independent of whatever TTL general conversation state carries.
-"""
+"""Conversational follow-up short-circuit: a follow-up like "and how soon will that rain stop?" names no location, so extract_location() would otherwise find nothing and 422 with LOCATION_REQUIRED even though it was just resolved one turn ago — this lets main.py reuse that resolution (and its time window) instead. Backed by InMemorySessionStore (the same bounded TTL-cache primitive app/storage/memory.py wraps, not a bare dict, so this can't reintroduce the unbounded-growth failure mode already fixed elsewhere), as a separate instance from app/storage's `session_store` — follow-up context needs its own short, fixed TTL, since a stale location silently answering a new question is worse than a cache miss."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -25,11 +11,11 @@ from app.storage.memory import InMemorySessionStore
 _store = InMemorySessionStore(settings.follow_up_context_max_entries, settings.follow_up_context_ttl_seconds)
 _verify_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
 _disambiguation_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
+_marine_followup_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.marine_followup_ttl_seconds)
 
 
 async def evaluate_follow_up(session_id: str, decision: GuardrailDecision) -> ResolvedContext | None:
-    """None means "resolve normally": a new explicit location was named, or nothing (or
-    nothing unexpired) is stored for this session."""
+    """None means "resolve normally": a new explicit location was named, or nothing (or nothing unexpired) is stored for this session."""
     if decision.location:
         return None
     payload = await _store.get(session_id)
@@ -58,8 +44,7 @@ async def store_pending_verification(session_id: str, original_text: str, candid
 
 
 async def consume_pending_verification(session_id: str) -> tuple[str, str] | None:
-    """Reads and clears in one call — a pending verification only ever applies to the
-    single next turn, confirmed or not."""
+    """Reads and clears in one call — a pending verification only ever applies to the single next turn, confirmed or not."""
     payload = await _verify_store.get(session_id)
     if payload is None:
         return None
@@ -72,13 +57,25 @@ async def store_pending_disambiguation(session_id: str, original_text: str, cand
 
 
 async def consume_pending_disambiguation(session_id: str) -> tuple[str, list[dict]] | None:
-    """Reads and clears in one call — a pending disambiguation only ever applies to the
-    single next turn, matched or not."""
+    """Reads and clears in one call — a pending disambiguation only ever applies to the single next turn, matched or not."""
     payload = await _disambiguation_store.get(session_id)
     if payload is None:
         return None
     await _disambiguation_store.drop(session_id)
     return payload["original_text"], payload["candidates"]
+
+
+async def store_pending_marine_followup(session_id: str, original_text: str) -> None:
+    await _marine_followup_store.put(session_id, {"original_text": original_text})
+
+
+async def consume_pending_marine_followup(session_id: str) -> str | None:
+    """Reads and clears in one call — a pending marine follow-up only ever applies to the single next turn, answered or not."""
+    payload = await _marine_followup_store.get(session_id)
+    if payload is None:
+        return None
+    await _marine_followup_store.drop(session_id)
+    return payload["original_text"]
 
 
 def status() -> dict:

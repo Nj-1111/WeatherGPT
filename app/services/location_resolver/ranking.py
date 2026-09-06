@@ -1,10 +1,4 @@
-"""Candidate scoring and ambiguity detection.
-
-India ranks as a hard tier, not a bias: when at least one Indian candidate exists, every
-Indian candidate outranks every non-Indian one, regardless of population. Filtering by
-country was tried and rejected (resolves "Springfield" to an obscure Tamil Nadu hamlet
-instead of the US city) — country only affects tier placement, never candidate presence.
-"""
+"""Candidate scoring and ambiguity detection. India ranks as a hard tier, not a bias: any Indian candidate outranks every non-Indian one regardless of population; filtering by country was tried and rejected (resolves "Springfield" to an obscure Tamil Nadu hamlet instead of the US city) — country only affects tier placement, never candidate presence."""
 from __future__ import annotations
 
 import math
@@ -22,9 +16,7 @@ def is_india_candidate(candidate: LocationCandidate) -> bool:
 
 
 def score_candidate(candidate: LocationCandidate, query: str) -> float:
-    """Higher is better within a tier. log10(population) keeps the scale comparable to the
-    bonuses. Country is not scored here — is_india_candidate() places the hard tier in
-    rank()/select() instead, so an India candidate never loses to a bigger foreign city."""
+    """Higher is better within a tier (log10(population) keeps the scale comparable to the bonuses); country isn't scored here since is_india_candidate() places the hard tier in rank()/select() instead."""
     population = candidate.population or 0
     score = math.log10(population + 1)
     if (candidate.feature_code or "").upper().startswith(_CAPITAL_CODES):
@@ -42,8 +34,7 @@ def rank(candidates: list[LocationCandidate], query: str) -> list[tuple[float, L
 
 
 def _is_plausible_single(candidate: LocationCandidate, query: str) -> bool:
-    """A lone candidate only auto-wins with some signal it's a real known place — not just
-    the one string a fuzzy-text search happened to return for a typo or "near me"."""
+    """A lone candidate only auto-wins with some signal it's a real known place — not just the one string a fuzzy-text search returned for a typo or "near me"."""
     if candidate.population is not None:
         return True
     if (candidate.feature_code or "").upper().startswith(_CAPITAL_CODES):
@@ -55,14 +46,7 @@ def _is_plausible_single(candidate: LocationCandidate, query: str) -> bool:
 def select(
     candidates: list[LocationCandidate], query: str, dominance_margin: float
 ) -> tuple[LocationCandidate | None, bool, list[tuple[float, LocationCandidate]]]:
-    """Return (winner, is_dominant, ranked).
-
-    `is_dominant` is True when the top candidate beats the runner-up *within its own tier*
-    by at least `dominance_margin`, or when it is the only plausible candidate in that tier
-    (see `_is_plausible_single`). A non-dominant result is reported as ambiguous rather
-    than silently resolved to a coin-flip winner — this now also covers a single
-    low-quality fuzzy match, not just a close multi-candidate tie.
-    """
+    """Return (winner, is_dominant, ranked). is_dominant is True when the top candidate beats the runner-up within its own tier by dominance_margin, or is the only plausible one in that tier (_is_plausible_single) — a non-dominant result is reported ambiguous rather than coin-flipped, covering a lone low-quality fuzzy match too, not just a close tie."""
     if not candidates:
         return None, False, []
     ranked = rank(candidates, query)

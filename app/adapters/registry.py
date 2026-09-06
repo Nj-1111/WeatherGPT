@@ -32,14 +32,7 @@ REGISTRY = {
 }
 
 async def health_all() -> dict[str, dict]:
-    """Probe every source concurrently, cached for health_cache_ttl_seconds.
-
-    Sequentially this cost the sum of eight upstream round trips (~11.5s measured), on an
-    endpoint deliberately exempt from auth and rate limiting (infra must be able to probe
-    it) — so any caller could repeat this fan-out for free, at this server's expense and
-    the upstream free APIs'. The cache is what actually bounds that, not the exemption
-    list. `return_exceptions` keeps each adapter isolated exactly as the loop did.
-    """
+    """Probe every source concurrently (return_exceptions keeps each isolated), cached for health_cache_ttl_seconds — sequentially this cost ~11.5s measured, and since /health is deliberately exempt from auth/rate-limiting, the cache (not the exemption) is what stops a caller repeating that fan-out for free."""
     cached = await _health_cache.get("health")
     if cached is not None:
         return cached.value

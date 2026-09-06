@@ -187,3 +187,105 @@ def test_ensemble_spread_is_not_a_source_disagreement():
     assert detect_disagreements(rank(ceos, 22.72, 75.86)) == []
     wio = build_wio("should I spray tomorrow", LOCATION, START, END, "short", ceos)
     assert wio.agreement.status == "full_agreement"
+
+
+def _marine_ceo(variable, value, hour=0, source="OPEN_METEO_MARINE", unit="m", statistic="instant"):
+    valid = START + timedelta(hours=hour)
+    return CanonicalEvidenceObject(
+        source=source, evidence_class="forecast", variable=variable, value=value, unit=unit,
+        statistic=statistic, geometry=Geometry(type="GridCell", coordinates=[75.86, 22.72]),
+        issued_at=START, valid_from=valid, valid_to=valid,
+        provenance=Provenance(original_source=source))
+
+
+def _rain_with_probability(amount, probability, hour=0, source="OPEN_METEO"):
+    """generate_scenarios needs both a precipitation_amount and a precipitation_probability
+    record to produce non-empty scenarios — a bare _hourly_rain() amount alone leaves
+    rain['probability'] as None and decide() defers instead of scoring."""
+    return [_ceo("precipitation_amount", amount, hour, source, window=1),
+            _ceo("precipitation_probability", probability, hour, source,
+                 unit="probability", statistic="probability", probability=probability)]
+
+
+def _marine_warning_ceo(severity="yellow"):
+    return CanonicalEvidenceObject(
+        source="CAP", evidence_class="warning", variable="marine_warning", value=None,
+        warning_severity=severity, raw_value="Gale warning",
+        geometry=Geometry(type="GridCell", coordinates=[75.86, 22.72]),
+        issued_at=START, valid_from=START, valid_to=END,
+        provenance=Provenance(original_source="CAP"))
+
+
+def test_marine_hazard_penalty_is_zero_for_calm_conditions():
+    from app.rade.v2 import _marine_hazard_penalty
+    ceos = [_marine_ceo("wave_height", 0.5)]
+    wio = build_wio("should I go fishing", LOCATION, START, END, "short", ceos)
+    penalty, notes = _marine_hazard_penalty(wio)
+    assert penalty == 0.0 and notes == []
+
+
+def test_marine_hazard_penalty_caution_band():
+    from app.rade.v2 import _marine_hazard_penalty
+    ceos = [_marine_ceo("wave_height", 1.5)]
+    wio = build_wio("should I go fishing", LOCATION, START, END, "short", ceos)
+    penalty, notes = _marine_hazard_penalty(wio)
+    assert penalty < 0
+    assert any("caution threshold" in note for note in notes)
+
+
+def test_marine_hazard_penalty_avoid_band_is_worse_than_caution():
+    from app.rade.v2 import _marine_hazard_penalty
+    caution_wio = build_wio("fishing", LOCATION, START, END, "short", [_marine_ceo("wave_height", 1.5)])
+    avoid_wio = build_wio("fishing", LOCATION, START, END, "short", [_marine_ceo("wave_height", 3.0)])
+    caution_penalty, _ = _marine_hazard_penalty(caution_wio)
+    avoid_penalty, notes = _marine_hazard_penalty(avoid_wio)
+    assert avoid_penalty < caution_penalty
+    assert any("avoid threshold" in note for note in notes)
+
+
+def test_marine_warning_active_reads_evidence_not_official_warning_slot():
+    """A marine warning can lose the single collapsed official_warning slot to a
+    higher-severity non-marine warning; RADE's marine hazard signal must not depend on it
+    winning that slot."""
+    from app.rade.v2 import _marine_hazard_penalty
+    ceos = [_marine_ceo("wave_height", 0.5), _marine_warning_ceo(severity="yellow")]
+    wio = build_wio("should I go fishing", LOCATION, START, END, "short", ceos)
+    penalty, notes = _marine_hazard_penalty(wio)
+    assert penalty < 0
+    assert any("official warning" in note for note in notes)
+
+
+def test_marine_decision_go_for_calm_conditions_without_crew_profile():
+    from app.rade.v2 import decide
+    ceos = _rain_with_probability(0.0, 0.1) + [_marine_ceo("wave_height", 0.5)]
+    wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", ceos)
+    result = decide(wio, {}, "marine")
+    assert result.recommended_action == "go"
+
+
+def test_marine_decision_escalates_for_small_boat_with_crew():
+    """A caution-band wave height is a borderline call by design: a solo/large-boat
+    profile can still recommend going, but a small boat with more than one person aboard
+    must flip the recommendation via the escalated risk_lambda."""
+    from app.rade.v2 import decide
+    ceos = _rain_with_probability(0.0, 0.1) + [_marine_ceo("wave_height", 1.6)]
+    wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", ceos)
+    solo_result = decide(wio, {}, "marine")
+    crew_result = decide(wio, {"boat_size": "small", "crew_size": 4}, "marine")
+    assert solo_result.recommended_action == "go"
+    assert crew_result.recommended_action != "go"
+    assert any("small boat" in note for note in crew_result.assumptions)
+
+
+def test_non_marine_domain_scores_are_unaffected_by_marine_changes():
+    """Regression guard: spray/irrigate/harvest/travel must behave identically to before
+    the marine hazard penalty and crew/boat risk escalation were added — a crew/boat
+    profile is meaningless outside the marine domain."""
+    from app.rade.v2 import decide
+    ceos = _rain_with_probability(1.0, 0.8)
+    wio = build_wio("should I spray my crop tomorrow", LOCATION, START, END, "short", ceos)
+    with_profile = decide(wio, {"boat_size": "small", "crew_size": 4}, "spray")
+    without_profile = decide(wio, {}, "spray")
+    assert with_profile.recommended_action == without_profile.recommended_action
+    assert with_profile.expected_utility == without_profile.expected_utility
+    assert not any("small boat" in note for note in with_profile.assumptions)

@@ -1,9 +1,4 @@
-"""Bounded TTL cache.  Cached values always carry their own freshness metadata.
-
-Bounded on purpose: the API is a long-lived process, so an unbounded dict here is a
-memory leak with a slow fuse. Eviction is LRU, and expired entries are swept on write
-rather than left to accumulate until their key happens to be queried again.
-"""
+"""Bounded TTL cache — bounded because this is a long-lived process (an unbounded dict is a slow-fuse memory leak); LRU eviction, and expired entries are swept on write rather than left to accumulate."""
 from __future__ import annotations
 
 import asyncio

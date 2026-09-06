@@ -1,13 +1,4 @@
-"""Primary geocoder — Open-Meteo Geocoding API.
-
-Chosen as primary because it needs no API key, and because the weather adapters already
-depend on Open-Meteo: no new vendor trust or reliability relationship is introduced.
-Returns structured admin1/admin2/population/feature_code, which map directly onto
-ResolvedLocation's existing state/district/hierarchy fields.
-
-Searches globally and lets ranking.py apply the India bias — passing countryCode=IN here
-would resolve "Springfield" to a Tamil Nadu hamlet (verified against the live API).
-"""
+"""Primary geocoder — Open-Meteo Geocoding API: keyless, and the weather adapters already depend on Open-Meteo so no new vendor trust is introduced. Returns structured admin1/admin2/population/feature_code mapping onto ResolvedLocation's fields; searches globally and lets ranking.py apply the India bias, since passing countryCode=IN here would resolve "Springfield" to a Tamil Nadu hamlet (verified live)."""
 from __future__ import annotations
 
 from typing import Any

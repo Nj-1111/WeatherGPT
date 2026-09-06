@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.storage.base import ContextLimitExceeded
 
 DB_PATH = Path(settings.database_path)
 
@@ -21,8 +22,7 @@ _SCHEMA = (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, decision TEXT,
         forecast TEXT, actual TEXT, feedback TEXT, timestamp TEXT
     )""",
-    # Backs storage.SqliteConversationLog. Payload is opaque JSON so a turn's shape can
-    # change without a migration here.
+    # Backs storage.SqliteConversationLog; payload is opaque JSON so a turn's shape can change without a migration here.
     """CREATE TABLE IF NOT EXISTS conversation_turns (
         id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, payload TEXT, created_at TEXT
     )""",
@@ -34,11 +34,7 @@ _initialized = False
 
 
 def _connect() -> sqlite3.Connection:
-    """Schema is created on first use rather than at import, so importing the module
-    never writes to disk.
-
-    `with conn` only commits; it does not close. Callers wrap this in closing().
-    """
+    """Schema is created on first use, not at import, so importing never writes to disk; `with conn` only commits, it does not close — callers wrap this in closing()."""
     global _initialized
     conn = sqlite3.connect(DB_PATH)
     if not _initialized:
@@ -68,15 +64,29 @@ def _expired(expiry: str | None) -> bool:
 
 def upsert_fact(user_id: str, fact: str, value: Any, confidence: float = 0.9, source: str = "user",
                 confirmed: bool = True, expiry: str | None = None) -> None:
-    # No conflict resolution: a repeat fact overwrites unconditionally, regardless of
-    # the stored confidence.
+    # No conflict resolution: a repeat fact overwrites unconditionally, regardless of the stored confidence.
+    serialized = str(value)
+    if len(serialized) > settings.context_value_max_chars:
+        raise ContextLimitExceeded(
+            user_id, f"Value exceeds the {settings.context_value_max_chars}-character limit")
     now = _now()
     with closing(_connect()) as conn, conn:
+        # Only a genuinely new fact name grows the row count, so the cap only ever blocks unbounded growth, never a caller repeatedly updating the same fact.
+        is_new = conn.execute(
+            "SELECT 1 FROM user_context WHERE user_id=? AND fact=?", (user_id, fact),
+        ).fetchone() is None
+        if is_new:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM user_context WHERE user_id=?", (user_id,),
+            ).fetchone()[0]
+            if count >= settings.context_max_facts_per_user:
+                raise ContextLimitExceeded(
+                    user_id, f"This user already has {settings.context_max_facts_per_user} stored facts")
         conn.execute(
             "INSERT OR REPLACE INTO user_context "
             "(user_id,fact,value,confidence,source,created_at,updated_at,confirmed,expiry) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
-            (user_id, fact, str(value), confidence, source, now, now, int(confirmed), expiry),
+            (user_id, fact, serialized, confidence, source, now, now, int(confirmed), expiry),
         )
 
 

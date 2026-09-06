@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.config import settings
-from app.storage.base import ConversationLog, MemoryStore, SessionStore
+from app.storage.base import ContextLimitExceeded, ConversationLog, MemoryStore, SessionStore
 from app.storage.memory import InMemorySessionStore
 from app.storage.sqlite import SqliteConversationLog, SqliteMemoryStore
 
@@ -92,6 +92,31 @@ def test_memory_store_still_filters_expired_facts_by_instant(store):
     memory.upsert_fact("u1", "fresh", "y", expiry=future)
     memory.upsert_fact("u1", "forever", "z")
     assert set(memory.get_context("u1")) == {"fresh", "forever"}
+
+
+def test_2_7_overwriting_an_existing_fact_never_counts_against_the_per_user_cap(store, monkeypatch):
+    memory, _ = store
+    monkeypatch.setattr("app.context.store.settings", dataclasses.replace(settings, context_max_facts_per_user=1))
+    memory.upsert_fact("u1", "risk_tolerance", "low")
+    memory.upsert_fact("u1", "risk_tolerance", "high")  # same fact name: overwrite, not growth
+    assert memory.get_context("u1")["risk_tolerance"]["value"] == "high"
+
+
+def test_2_7_a_new_fact_past_the_per_user_cap_is_rejected(store, monkeypatch):
+    memory, _ = store
+    monkeypatch.setattr("app.context.store.settings", dataclasses.replace(settings, context_max_facts_per_user=1))
+    memory.upsert_fact("u1", "risk_tolerance", "low")
+    with pytest.raises(ContextLimitExceeded):
+        memory.upsert_fact("u1", "another_fact", "value")
+    assert set(memory.get_context("u1")) == {"risk_tolerance"}
+
+
+def test_2_7_an_oversized_value_is_rejected(store, monkeypatch):
+    memory, _ = store
+    monkeypatch.setattr("app.context.store.settings", dataclasses.replace(settings, context_value_max_chars=8))
+    with pytest.raises(ContextLimitExceeded):
+        memory.upsert_fact("u1", "essay", "x" * 9)
+    assert memory.get_context("u1") == {}
 
 
 def test_feedback_is_accepted(store):

@@ -1,9 +1,4 @@
-"""Unit conversions shared across fusion and verification.
-
-One definition on purpose: the reviewer recomputes panel values from the evidence they
-cite, so if fusion and verification ever converted differently the gate would start
-rejecting correct claims.
-"""
+"""Unit conversions shared across fusion and verification — one definition on purpose, since the reviewer recomputes panel values from cited evidence and a mismatch would reject correct claims."""
 from __future__ import annotations
 
 from app.schemas.ceo import CanonicalEvidenceObject

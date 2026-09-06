@@ -1,18 +1,5 @@
-"""Provider-agnostic two-tier LLM gateway.
-
-A transport and nothing more. It carries prompts and returns text. It never selects a
-weather source, never decides whether a request is safe, never resolves a coordinate or a
-timestamp — those belong to the deterministic layers and stay there.
-
-Two tiers, each an ordered chain of OpenAI-compatible endpoints supplied entirely by the
-environment. No provider name, model id or per-provider rule appears in this file; a
-provider is only ever a base URL and a model string. Every realistic free host — local
-runtimes included — speaks this shape, so switching providers is a config edit.
-
-The chain is tried in order on timeout or error. When every endpoint fails the caller
-receives `LLMResult(available=False)`. **This function never raises**, because an
-exception escaping here would reach a caller whose job is to decide what is safe.
-"""
+"""Provider-agnostic two-tier LLM gateway: a transport only — never selects a weather source, judges safety, or resolves a coordinate/timestamp — and never raises; a fully failed chain returns `LLMResult(available=False)`.
+Each tier is an ordered chain of OpenAI-compatible endpoints from the environment alone (no provider name/model id/per-provider rule in code, just a base URL + model string), tried in order on timeout or error, so switching providers is a config edit."""
 from __future__ import annotations
 
 import logging
@@ -34,8 +21,7 @@ DETERMINISTIC = "deterministic"
 
 @dataclass(frozen=True)
 class LLMResult:
-    """The only thing the gateway ever returns. `available` is the single flag callers
-    branch on; `text` is meaningful only when it is True."""
+    """The only thing the gateway ever returns — `available` is the flag callers branch on; `text` is meaningful only when it's True."""
     tier: Tier
     available: bool
     text: str | None = None
@@ -65,10 +51,7 @@ async def _post(endpoint: LLMEndpoint, messages: list[dict[str, Any]],
         headers=headers,
         json={"model": endpoint.model, "messages": messages,
               "temperature": temperature, "max_tokens": max_tokens,
-              # A reasoning-capable model otherwise inlines a <think>...</think> block into
-              # `content`, consuming the token budget meant for the actual answer. Endpoints
-              # that don't recognize this field ignore it, per the OpenAI-compatible spec's
-              # tolerance for unknown request fields.
+              # Without this, a reasoning-capable model inlines a <think> block into `content`, eating the answer's token budget; endpoints that don't recognize the field just ignore it.
               "reasoning_format": "hidden"},
         timeout=settings.llm_timeout_seconds,
     )
@@ -123,8 +106,5 @@ async def small_llm(messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
 
 
 async def big_llm(messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
-    """Complex multi-step reasoning only. Woken by
-    `app.agents.orchestrator._requires_big_llm`'s deterministic trigger (a RADE decision
-    that couldn't resolve confidently, or fused sources that disagree), never by asking the
-    small model whether it feels out of its depth."""
+    """Complex multi-step reasoning only — woken by `_requires_big_llm`'s deterministic trigger (an unresolved RADE decision or disagreeing fused sources), never by asking the small model if it feels out of its depth."""
     return await generate("big", messages, **kwargs)

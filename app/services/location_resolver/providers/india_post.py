@@ -1,11 +1,4 @@
-"""Indian PIN code resolution — India Post public API (free, no key).
-
-Open-Meteo's geocoder returns nothing for Indian PIN codes (verified: 560001 and 110001
-both yield no results), so PIN handling needs a dedicated source.
-
-This API returns District and State but *no coordinates*, so it only resolves a PIN to a
-place name; the caller geocodes that name through the normal provider chain.
-"""
+"""Indian PIN code resolution — India Post public API (free, no key); Open-Meteo's geocoder returns nothing for Indian PINs (verified: 560001, 110001 both empty). Returns District/State but no coordinates, so it only resolves a PIN to a place name — the caller geocodes that through the normal provider chain."""
 from __future__ import annotations
 
 from dataclasses import dataclass

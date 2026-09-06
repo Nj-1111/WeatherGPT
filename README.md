@@ -70,5 +70,7 @@ All request bodies are Pydantic-validated. Errors use `{error:{code,message,deta
 The equivalent `/api/v1/` query, health, decision, context, and feedback routes are available where listed by OpenAPI. Location must be supplied explicitly or occur unambiguously in the question.
 
 See [services](docs/SERVICES.md) for a plain-language walkthrough of every module,
-[CLAUDE.md](CLAUDE.md) for coding rules and the outstanding-work register, [BUG.md](BUG.md)
-for known defects and [AUDIT.md](AUDIT.md) for the 2026-09-05 teardown.
+[architecture](docs/architecture.md) for a diagram of the request pipeline,
+[CLAUDE.md](CLAUDE.md) for coding rules and session history, [FIXES.md](FIXES.md) for the
+current "what's left" index, and [BUG.md](BUG.md)/[AUDIT.md](AUDIT.md) for the detailed
+defect register and 2026-09-05 teardown behind it.

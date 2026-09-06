@@ -15,7 +15,7 @@ import pytest
 
 from app.config import LLMEndpoint, settings
 from app.llm.client import LLMResult
-from app.schemas.query import ClarifyReason, GuardrailAction
+from app.schemas.query import ClarifyReason, GuardrailAction, Persona
 from app.services import query_guardrail
 
 
@@ -274,3 +274,61 @@ def test_render_message_none_for_accept_actions():
     for action in (GuardrailAction.ACCEPT_LOCATION_ONLY, GuardrailAction.ACCEPT_WEATHER_FULL):
         decision = GuardrailDecision(original_text="x", action=action)
         assert query_guardrail.render_guardrail_message(decision) is None
+
+
+def test_llm_reports_marine_persona(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Kochi",
+                            "time": "tomorrow", "verify_candidate": None,
+                            "clarify_reason": None, "confidence": 0.9, "persona": "marine"})
+    result = asyncio.run(query_guardrail.run_guardrail("should I go fishing near Kochi tomorrow"))
+    assert result.persona == Persona.MARINE
+
+
+def test_llm_omitting_persona_defaults_to_none(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Pune",
+                            "time": None, "verify_candidate": None, "clarify_reason": None,
+                            "confidence": 0.9})
+    result = asyncio.run(query_guardrail.run_guardrail("weather in Pune"))
+    assert result.persona == Persona.NONE
+
+
+def test_invalid_persona_value_degrades_to_none_without_discarding_decision(monkeypatch):
+    """persona is additive, not load-bearing like action — an otherwise-valid decision must
+    survive a bad persona value rather than falling all the way back to the deterministic path."""
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Pune",
+                            "time": None, "verify_candidate": None, "clarify_reason": None,
+                            "confidence": 0.9, "persona": "astronaut"})
+    result = asyncio.run(query_guardrail.run_guardrail("weather in Pune"))
+    assert result.persona == Persona.NONE
+    assert result.extraction_source == "llm"
+    assert result.location == "Pune"
+
+
+def test_deterministic_fallback_classifies_marine_persona(monkeypatch):
+    _stub_llm(monkeypatch, None, available=False)
+    result = asyncio.run(query_guardrail.run_guardrail("should I go fishing near Kochi tomorrow"))
+    assert result.persona == Persona.MARINE
+    assert result.extraction_source == "deterministic_fallback"
+
+
+def test_deterministic_fallback_persona_none_for_ordinary_weather(monkeypatch):
+    _stub_llm(monkeypatch, None, available=False)
+    result = asyncio.run(query_guardrail.run_guardrail("will it rain in Indore tomorrow"))
+    assert result.persona == Persona.NONE
+
+
+def test_resolve_confirmed_location_reclassifies_marine_persona():
+    decision = query_guardrail.resolve_confirmed_location("weather for a fishing trip near kochi", "Kochi")
+    assert decision.persona == Persona.MARINE
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("alone", {"crew_size": 1}),
+    ("with 4 of us", {"crew_size": 4}),
+    ("three of us", {"crew_size": 3}),
+    ("small boat, four of us", {"crew_size": 4, "boat_size": "small"}),
+    ("a large trawler", {"boat_size": "large"}),
+    ("not sure", {}),
+])
+def test_parse_crew_boat_answer(answer, expected):
+    assert query_guardrail._parse_crew_boat_answer(answer) == expected

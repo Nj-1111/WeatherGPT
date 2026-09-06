@@ -47,25 +47,58 @@ def test_open_meteo_marine_normalize_handles_malformed_payload():
     assert OpenMeteoMarineAdapter().normalize({"hourly": {"time": ["not-a-timestamp"]}}, lat=13.0, lon=80.3) == []
 
 
-def test_cap_alert_links_accepts_query_string_style_urls():
+def test_cap_alert_links_accepts_query_string_style_urls(monkeypatch):
     """NDMA's feed links to FetchXMLFile?identifier=... (real, valid CAP XML — verified
     live), not *.xml like IMD's. A suffix-based filter silently dropped every one."""
+    import dataclasses
+
     from app.adapters.cap_adapter import CapAdapter
+    from app.config import settings
+    monkeypatch.setattr("app.adapters.cap_adapter.settings",
+                        dataclasses.replace(settings, cap_feed_url="https://sachet.ndma.gov.in/feed.xml"))
     index = b"""<rss><channel>
         <item><link>https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123</link></item>
-        <item><link>https://cap-sources.example.com/alert-42.xml</link></item>
         <item><link>not-a-url</link></item>
     </channel></rss>"""
     links = CapAdapter._alert_links(index)
-    assert links == [
-        "https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123",
-        "https://cap-sources.example.com/alert-42.xml",
-    ]
+    assert links == ["https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123"]
+
+
+def test_2_10_cap_alert_links_rejects_links_off_the_feeds_own_host(monkeypatch):
+    """§2.10: a compromised/malicious feed must not be able to redirect this adapter into
+    fetching an arbitrary host (e.g. internal network / cloud metadata addresses)."""
+    import dataclasses
+
+    from app.adapters.cap_adapter import CapAdapter
+    from app.config import settings
+    monkeypatch.setattr("app.adapters.cap_adapter.settings",
+                        dataclasses.replace(settings, cap_feed_url="https://sachet.ndma.gov.in/feed.xml"))
+    index = b"""<rss><channel>
+        <item><link>https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123</link></item>
+        <item><link>http://169.254.169.254/latest/meta-data/</link></item>
+        <item><link>https://attacker.example.com/alert.xml</link></item>
+    </channel></rss>"""
+    links = CapAdapter._alert_links(index)
+    assert links == ["https://sachet.ndma.gov.in/cap_public_website/FetchXMLFile?identifier=123"]
 
 
 def test_cap_alert_links_empty_for_malformed_index():
     from app.adapters.cap_adapter import CapAdapter
     assert CapAdapter._alert_links(b"not xml at all") == []
+
+
+def test_2_10_cap_decoder_rejects_xml_with_a_dtd():
+    """§2.10: entity-expansion (billion-laughs) payloads are rejected outright rather
+    than parsed — defusedxml refuses any DOCTYPE, not just ones that expand."""
+    import pytest
+    from defusedxml.common import DefusedXmlException
+
+    from app.decoders.cap_decoder import decode_cap_xml
+    payload = b"""<?xml version="1.0"?>
+        <!DOCTYPE alert [<!ENTITY lol "lol">]>
+        <alert><info><event>&lol;</event></info></alert>"""
+    with pytest.raises(DefusedXmlException):
+        decode_cap_xml(payload)
 
 
 def test_grib2_unavailable():

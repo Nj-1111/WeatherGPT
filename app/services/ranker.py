@@ -25,11 +25,7 @@ AUTHORITY = {
 
 
 def _temporal_score(ev: CanonicalEvidenceObject, window: tuple[datetime, datetime] | None) -> float:
-    """Proximity of the evidence's valid time to the middle of the requested window.
-
-    Every hourly record from one source is otherwise identical on all other terms, which
-    left ordering to be decided by whichever was decoded first.
-    """
+    """Proximity to the window's midpoint — without this, every hourly record from one source scores identically and ordering falls to whichever was decoded first."""
     if window is None or ev.valid_from is None:
         return 1.0
     start, end = to_utc(window[0]), to_utc(window[1])
@@ -74,14 +70,7 @@ def rank(evs: list[CanonicalEvidenceObject], q_lat: float, q_lon: float,
 
 
 def group_comparable(evs: list[CanonicalEvidenceObject]) -> dict[tuple, list[CanonicalEvidenceObject]]:
-    """Bucket evidence that is genuinely like-for-like.
-
-    The accumulation window is part of the key: a 24-hour rainfall total and a 1-hour one
-    differ by arithmetic, not by disagreement, and comparing them is the exact confusion
-    the CEO schema exists to prevent. Ensemble members are excluded for the same reason:
-    they are one vendor's uncertainty distribution, not independent reports, and letting
-    them into a bucket made that spread read as sources disagreeing.
-    """
+    """Bucket like-for-like evidence: window is part of the key (a 24h and 1h total differ by arithmetic, not disagreement), and ensemble members are excluded (one vendor's uncertainty spread previously read as sources disagreeing)."""
     buckets: dict[tuple, list[CanonicalEvidenceObject]] = defaultdict(list)
     for ev in evs:
         if ev.value is None or ev.valid_from is None or ev.ensemble_member is not None:
@@ -91,11 +80,7 @@ def group_comparable(evs: list[CanonicalEvidenceObject]) -> dict[tuple, list[Can
 
 
 def corroborated(evs: list[CanonicalEvidenceObject]) -> bool:
-    """True when at least two distinct sources report the same thing for the same moment.
-
-    Counting evidence objects instead of sources let one vendor's temperature and rainfall
-    read as two sources agreeing.
-    """
+    """True when 2+ distinct sources report the same thing at the same moment — counting evidence objects instead of sources let one vendor's temperature and rainfall read as two sources agreeing."""
     return any(len({ev.source for ev in bucket}) >= 2 for bucket in group_comparable(evs).values())
 
 

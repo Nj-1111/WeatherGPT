@@ -1,8 +1,9 @@
 """CAP XML -> CEOs. Preserves alert lifecycle (update/cancel) and geography."""
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+
+import defusedxml.ElementTree as ET
 
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 
@@ -80,8 +81,7 @@ def decode_cap_xml(xml_bytes: bytes) -> list[CanonicalEvidenceObject]:
         headline = _text(info, "headline")
         severity = (_text(info, "severity") or "Moderate").casefold()
         colour = "cancelled" if is_cancel else _SEVERITY_COLOURS.get(severity, "yellow")
-        # IMD publishes <onset>; <effective> is often absent. Falling back to the issue
-        # time made every warning look like it started the moment it was published.
+        # <onset> is IMD's usual field; falling back straight to issue time made every warning look live.
         valid_from = _time(_text(info, "onset")) or _time(_text(info, "effective")) or issued
         valid_to = _time(_text(info, "expires"))
 

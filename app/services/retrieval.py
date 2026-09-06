@@ -1,8 +1,4 @@
-"""Concurrent, isolated source retrieval with explicit partial-result reporting.
-
-The isolation contract: one dead source can never fail a request. Every failure is
-caught per source and reported as data in `retrieval_status`, never raised.
-"""
+"""Concurrent, isolated source retrieval: one dead source can never fail a request — every failure is caught per source and reported as data in `retrieval_status`, never raised."""
 from __future__ import annotations
 
 import asyncio
@@ -23,8 +19,7 @@ from app.services.cache import weather_cache
 
 logger = logging.getLogger(__name__)
 
-# Reanalysis of a past date cannot change; a live forecast can. One TTL for both either
-# re-fetches immutable data or serves stale forecasts.
+# Reanalysis of a past date is immutable but a live forecast isn't, so each gets its own TTL.
 _CACHE_TTL_BY_SOURCE = {
     "ERA5": settings.historical_cache_ttl_seconds,
     "NASA_POWER": settings.historical_cache_ttl_seconds,
@@ -34,10 +29,7 @@ _CACHE_TTL_BY_SOURCE = {
 
 
 class CircuitBreaker:
-    """Stops re-dialling a source that is reliably failing.
-
-    Without this, an unconfigured source costs a full timeout on every single request.
-    """
+    """Stops re-dialling a reliably-failing source, so it doesn't cost a full timeout per request."""
 
     def __init__(self, threshold: int, reset_seconds: float) -> None:
         self._threshold = threshold
@@ -76,13 +68,23 @@ breaker = CircuitBreaker(settings.circuit_breaker_threshold, settings.circuit_br
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """A timeout or a 5xx may succeed on a second attempt; a 4xx or a missing
-    credential will not, and retrying it only wastes the request budget."""
+    """A timeout or 5xx may succeed on retry; a 4xx or missing credential won't and only wastes budget."""
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.TransportError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code >= 500 or exc.response.status_code == 429
     return False
+
+
+def _safe_error_reason(exc: Exception) -> str:
+    """Fixed, user-safe reason for retrieval_status — never exc's own text, which can leak URLs/hostnames; full detail stays in the (non-user-facing) log line at the call site."""
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return "source timed out"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "source rate-limited" if exc.response.status_code == 429 else "source returned an error response"
+    if isinstance(exc, httpx.TransportError):
+        return "source unreachable"
+    return "source request failed"
 
 
 def _cache_key(source: str, kwargs: dict[str, Any]) -> str:
@@ -108,8 +110,7 @@ def _source_kwargs(source: str, lat: float, lon: float, valid_from, valid_to) ->
 
 
 def _wanted(items: list[CanonicalEvidenceObject], plan: RetrievalPlan) -> list[CanonicalEvidenceObject]:
-    """Keep only what the plan asked for. Warnings are governed by need_warnings, not by
-    the variable list, so they are never filtered out here."""
+    """Keep only what the plan asked for; warnings are governed by need_warnings, so never filtered out here."""
     if not plan.variables:
         return items
     wanted = set(plan.variables)
@@ -156,7 +157,7 @@ async def _one(source: str, lat: float, lon: float, plan: RetrievalPlan, valid_f
         breaker.record_failure(source)
         logger.warning("retrieval.source_failed",
                        extra={"source": source, "error": type(exc).__name__, "detail": str(exc)[:200]})
-        return source, [], f"{type(exc).__name__}: {exc}", False
+        return source, [], _safe_error_reason(exc), False
 
 
 async def retrieve(plan: RetrievalPlan, *, lat: float, lon: float, valid_from, valid_to) -> tuple[list[CanonicalEvidenceObject], dict[str, Any]]:

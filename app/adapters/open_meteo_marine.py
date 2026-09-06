@@ -1,11 +1,4 @@
-"""Open-Meteo Marine Weather Adapter — real, key-free.
-
-Primary marine source (app/orchestrator/retrieval_planner.py's "marine" family): wave
-height/direction/period, ocean current velocity/direction, sea surface temperature.
-Verified live field names/units against the real API before writing this — Open-Meteo
-returns ocean_current_velocity in km/h, not m/s, which app/services/variable_registry.py
-declares accordingly.
-"""
+"""Open-Meteo Marine Weather Adapter — real, key-free. Primary marine source (wave height/direction/period, ocean current velocity/direction, sea surface temperature); verified live that ocean_current_velocity is km/h, not m/s, which variable_registry.py declares accordingly."""
 from __future__ import annotations
 
 import time

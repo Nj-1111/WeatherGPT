@@ -1,8 +1,4 @@
-"""MET Norway adapter — keyless, but requires an identifying User-Agent.
-
-api.met.no returns 403 to generic User-Agents as a matter of policy, so the
-identifying string is configuration, not decoration.
-"""
+"""MET Norway adapter — keyless, but requires an identifying User-Agent: api.met.no returns 403 to generic ones as a matter of policy, so the identifying string is configuration, not decoration."""
 from __future__ import annotations
 
 import time

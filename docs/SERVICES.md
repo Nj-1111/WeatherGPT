@@ -12,7 +12,8 @@ explains *why* the current design looks the way it does — most of the temporal
 term, the per-timestamp disagreement buckets, and the corroboration rule exist directly
 because of faults recorded here. Faults still open are marked as before; where one is
 already tracked with a finding ID, this document points at `BUG.md`/`AUDIT.md` instead of
-re-describing it, so there is one home per fact.
+re-describing it, so there is one home per fact — `FIXES.md` is the current open/closed
+status for every finding ID cited below.
 
 ---
 
