@@ -7,9 +7,10 @@ import re
 
 from app.config import settings
 from app.llm.client import small_llm
-from app.orchestrator.retrieval_planner import _DECISION_KEYWORDS, _MARINE_WORDS, has_word
+from app.orchestrator.retrieval_planner import ALL_CAPABILITIES, GUIDANCE_FLAGS, has_word
 from app.prompts.loader import load_prompt
-from app.schemas.query import ClarifyReason, GuardrailAction, GuardrailDecision, Persona
+from app.rade.v2 import CLARIFYING_FIELDS
+from app.schemas.query import ClarifyReason, GuardrailAction, GuardrailDecision
 from app.services.cache import TTLCache
 from app.services.guardrail import TOPIC_WORDS, check_question
 from app.services.location_resolver.normalize import extract_place_phrase
@@ -21,10 +22,37 @@ _SYSTEM_PROMPT = load_prompt("guardrail")
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _VALID_ACTIONS = {member.value for member in GuardrailAction}
 _VALID_CLARIFY_REASONS = {member.value for member in ClarifyReason}
-_VALID_PERSONAS = {member.value for member in Persona}
+_VALID_CAPABILITIES = set(ALL_CAPABILITIES)
+_VALID_PAIRING_MODES = {"locations_x_shared_time", "times_x_shared_location", "full_cross_product"}
+_VALID_CAPABILITY_CONFIDENCE = {"low", "medium", "high"}
+_APPARENT_CONTEXT_MAX_LENGTH = 200
+_LOCATION_MAX_LENGTH = 256
+_TIME_PHRASE_MAX_LENGTH = 128
 
-# Fallback's marine-persona signal matches retrieval_planner's need_marine condition exactly, so it never fires without retrieval also planning marine data; the LLM's own rule is deliberately broader (beach/coastal phrasing too), covered separately by build_retrieval_plan's `persona` param.
-_PERSONA_MARINE_WORDS = _DECISION_KEYWORDS["marine"] + _MARINE_WORDS
+
+def _sanitize_capabilities(raw: object) -> list[str] | None:
+    """Filters to the closed vocabulary — drops anything the LLM invented rather than
+    rejecting the whole decision. Returns None (invalid, triggers a retry) only for the one
+    case that's genuinely malformed: guidance flags with no real data capability alongside
+    them, which carry no data and are meaningless alone."""
+    if not isinstance(raw, list):
+        return []
+    caps = list(dict.fromkeys(c for c in raw if isinstance(c, str) and c in _VALID_CAPABILITIES))
+    if caps and all(c in GUIDANCE_FLAGS for c in caps):
+        return None
+    return caps
+
+
+def _sanitize_confidence_per_capability(raw: object, capabilities: list[str]) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if k in capabilities and v in _VALID_CAPABILITY_CONFIDENCE}
+
+
+def _sanitize_string_list(raw: object, max_length: int) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip()[:max_length] for item in raw if isinstance(item, str) and str(item).strip()]
 
 # Deterministic-fallback-only signal: "coordinates of X" with no weather word — kept separate from guardrail.TOPIC_WORDS so "weather and coordinates of Pune" still reads as a weather request.
 _LOCATION_ONLY_WORDS = (
@@ -64,29 +92,50 @@ def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
     except json.JSONDecodeError:
         logger.warning("query_guardrail.unparseable_output", extra={"raw_length": len(llm_text)})
         return None
+    # action is load-bearing (the real dispatch key) — invalid here means the whole decision
+    # is untrustworthy, so this is the one field that still discards everything and retries.
     action = data.get("action")
     if action not in _VALID_ACTIONS:
         return None
+
+    # Every field below this point degrades independently: invalid/missing input defaults
+    # safely rather than losing an otherwise-good `action` classification to a retry.
     clarify_reason = data.get("clarify_reason")
     if clarify_reason not in _VALID_CLARIFY_REASONS:
         clarify_reason = None
-    # persona is additive, not load-bearing like action: a right-action-wrong-persona LLM output shouldn't lose the whole decision to a fallback re-run.
-    persona = data.get("persona")
-    if persona not in _VALID_PERSONAS:
-        persona = Persona.NONE.value
+    apparent_context = data.get("apparent_context") or None
+    if apparent_context is not None:
+        apparent_context = str(apparent_context).strip()[:_APPARENT_CONTEXT_MAX_LENGTH] or None
+    pairing_mode = data.get("pairing_mode")
+    if pairing_mode not in _VALID_PAIRING_MODES:
+        pairing_mode = "locations_x_shared_time"
+    capabilities = _sanitize_capabilities(data.get("capabilities"))
+    if capabilities is None:
+        # Guidance flags with no real data capability — genuinely malformed, not just
+        # incomplete; the one non-`action` field still worth a retry over.
+        return None
+    capabilities_version = data.get("capabilities_version")
+    if not isinstance(capabilities_version, str) or not capabilities_version:
+        capabilities_version = "v1"
+
     try:
         return GuardrailDecision(
             original_text=raw_text,
             action=GuardrailAction(action),
-            location=data.get("location") or None,
-            time=data.get("time") or None,
+            locations=_sanitize_string_list(data.get("locations"), _LOCATION_MAX_LENGTH),
+            time_phrases=_sanitize_string_list(data.get("time_phrases"), _TIME_PHRASE_MAX_LENGTH),
+            pairing_mode=pairing_mode,
             verify_candidate=data.get("verify_candidate") or None,
             clarify_reason=ClarifyReason(clarify_reason) if clarify_reason else None,
             unsupported_topic=data.get("unsupported_topic") or None,
             confidence=float(data.get("confidence", 0.0)),
             extraction_source="llm",
             detected_lang=(data.get("detected_lang") or "en").strip() or "en",
-            persona=Persona(persona),
+            apparent_context=apparent_context,
+            capabilities=capabilities,
+            capabilities_version=capabilities_version,
+            confidence_per_capability=_sanitize_confidence_per_capability(
+                data.get("confidence_per_capability"), capabilities),
         )
     except (TypeError, ValueError):
         logger.warning("query_guardrail.invalid_fields", extra={"raw_length": len(llm_text)})
@@ -103,11 +152,12 @@ def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
                                  unsupported_topic=unsupported, confidence=1.0,
                                  extraction_source="deterministic_fallback")
     location = extract_place_phrase(text)
+    locations = [location] if location else []
     if _is_location_only_phrasing(casefolded):
         location = location or _extract_location_only_phrase(text)
         if location:
             return GuardrailDecision(original_text=text, action=GuardrailAction.ACCEPT_LOCATION_ONLY,
-                                     location=location, confidence=1.0, extraction_source="deterministic_fallback")
+                                     locations=[location], confidence=1.0, extraction_source="deterministic_fallback")
         return GuardrailDecision(original_text=text, action=GuardrailAction.CLARIFY,
                                  clarify_reason=ClarifyReason.NO_LOCATION, confidence=1.0,
                                  extraction_source="deterministic_fallback")
@@ -117,13 +167,29 @@ def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
     except Exception:
         is_weather_related = False
     action = GuardrailAction.ACCEPT_WEATHER_FULL if is_weather_related else GuardrailAction.REJECT_OFF_TOPIC
-    persona = Persona.MARINE if action == GuardrailAction.ACCEPT_WEATHER_FULL and has_word(casefolded, _PERSONA_MARINE_WORDS) else Persona.NONE
-    return GuardrailDecision(original_text=text, action=action, location=location,
-                             confidence=1.0, extraction_source="deterministic_fallback", persona=persona)
+    # capabilities stays empty here deliberately: retrieval_planner's own keyword matching
+    # already decides what to fetch from the raw question text independent of capabilities
+    # (capabilities only widens coverage beyond what keywords catch, which the deterministic
+    # path — itself keyword-only — cannot do any better on anyway).
+    return GuardrailDecision(original_text=text, action=action, locations=locations,
+                             confidence=1.0, extraction_source="deterministic_fallback")
 
 
 # One LLM call per distinct question, not per request. A fallback decision is never stored — it's a degraded read and must not outlive the outage that produced it.
 _decision_cache = TTLCache(settings.guardrail_cache_max_entries)
+
+
+_LLM_KWARGS = {
+    "temperature": 0.0,
+    # A tightly-budgeted structured-output call — reasoning depth isn't needed for a
+    # fixed decision-tree classification, and a reasoning-capable model burns its hidden
+    # reasoning against this same max_tokens budget (see llm/client.py's note). 280 was
+    # enough for the primary endpoint but confirmed live to truncate the fallback
+    # endpoint's response mid-JSON (finish_reason "length" at ~260 tokens); 500 gives
+    # headroom on both without depending on either endpoint's specific reasoning cost.
+    "max_tokens": 500,
+    "reasoning_effort": "low",
+}
 
 
 async def run_guardrail(raw_text: str) -> GuardrailDecision:
@@ -132,57 +198,68 @@ async def run_guardrail(raw_text: str) -> GuardrailDecision:
     cached = await _decision_cache.get(key)
     if cached is not None:
         return cached.value.model_copy(update={"original_text": text})
-    result = await small_llm(
-        [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": text}],
-        temperature=0.0,
-        max_tokens=200,
-    )
+    messages = [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": text}]
+    result = await small_llm(messages, **_LLM_KWARGS)
     if not result.available or not result.text:
         logger.info("query_guardrail.llm_unavailable", extra={"error": result.error})
         return _deterministic_fallback(text)
     parsed = _parse(text, result.text)
     if parsed is None:
-        return _deterministic_fallback(text)
+        # One bounded retry with the failure fed back — not a loop — before falling back
+        # deterministically. Only reached on the already-rare invalid-`action`/guidance-flag
+        # cases; every other field degrades independently inside _parse() without retrying.
+        retry_messages = [
+            *messages,
+            {"role": "assistant", "content": result.text},
+            {"role": "user", "content": "That was not valid JSON matching the required schema "
+                                        "and rules. Reply again with ONLY the corrected JSON object."},
+        ]
+        retry_result = await small_llm(retry_messages, **_LLM_KWARGS)
+        parsed = (_parse(text, retry_result.text)
+                 if retry_result.available and retry_result.text else None)
+        if parsed is None:
+            return _deterministic_fallback(text)
     await _decision_cache.put(key, parsed, settings.guardrail_cache_ttl_seconds)
     return parsed
 
 
 def resolve_confirmed_location(original_text: str, confirmed_location: str) -> GuardrailDecision:
     """A VERIFY candidate the user just confirmed next turn — the original classification stopped at rule 5 without deciding location-only vs weather-full, so the same branch _deterministic_fallback applies, just with the location already known."""
-    casefolded = original_text.casefold()
-    action = (GuardrailAction.ACCEPT_LOCATION_ONLY if _is_location_only_phrasing(casefolded)
+    action = (GuardrailAction.ACCEPT_LOCATION_ONLY if _is_location_only_phrasing(original_text.casefold())
              else GuardrailAction.ACCEPT_WEATHER_FULL)
-    persona = Persona.MARINE if action == GuardrailAction.ACCEPT_WEATHER_FULL and has_word(casefolded, _PERSONA_MARINE_WORDS) else Persona.NONE
-    return GuardrailDecision(original_text=original_text, action=action, location=confirmed_location,
-                             confidence=1.0, extraction_source="confirmed", persona=persona)
+    return GuardrailDecision(original_text=original_text, action=action, locations=[confirmed_location],
+                             confidence=1.0, extraction_source="confirmed")
 
 
-_SOLO_WORDS = ("alone", "solo", "single", "myself")
-_SMALL_BOAT_WORDS = ("small", "dinghy", "kayak", "canoe")
-_LARGE_BOAT_WORDS = ("large", "big", "trawler")
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
                 "eight": 8, "nine": 9, "ten": 10}
 
 
-def _parse_crew_boat_answer(text: str) -> dict:
-    """A one-sentence answer to "alone or with a crew? small boat or large?" — a fixed keyword parse, same invariant as the rest of this module; unrecognized text yields an empty update rather than guessing."""
+def _parse_followup_answer(text: str, domain: str) -> dict:
+    """A one-sentence answer to a closed clarifying question — a fixed keyword parse, same
+    invariant as the rest of this module. Declarative over rade.v2.CLARIFYING_FIELDS instead
+    of one hardcoded parser per domain: a new domain's fields need a dict entry there, not a
+    new function here. Unrecognized text yields an empty update rather than guessing."""
     casefolded = text.casefold()
     update: dict[str, object] = {}
-    if has_word(casefolded, _SOLO_WORDS):
-        update["crew_size"] = 1
-    else:
-        digit_match = re.search(r"\b(\d+)\b", casefolded)
-        if digit_match:
-            update["crew_size"] = int(digit_match.group(1))
-        else:
-            for word, value in _NUMBER_WORDS.items():
-                if has_word(casefolded, (word,)):
-                    update["crew_size"] = value
+    for field, spec in CLARIFYING_FIELDS.get(domain, {}).items():
+        if spec["kind"] == "solo_or_count":
+            if has_word(casefolded, spec["solo_words"]):
+                update[field] = 1
+            else:
+                digit_match = re.search(r"\b(\d+)\b", casefolded)
+                if digit_match:
+                    update[field] = int(digit_match.group(1))
+                else:
+                    for word, value in _NUMBER_WORDS.items():
+                        if has_word(casefolded, (word,)):
+                            update[field] = value
+                            break
+        elif spec["kind"] == "enum":
+            for value, words in spec["values"].items():
+                if has_word(casefolded, words):
+                    update[field] = value
                     break
-    if has_word(casefolded, _SMALL_BOAT_WORDS):
-        update["boat_size"] = "small"
-    elif has_word(casefolded, _LARGE_BOAT_WORDS):
-        update["boat_size"] = "large"
     return update
 
 

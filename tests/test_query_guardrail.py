@@ -1,8 +1,7 @@
 """The guardrail decision funnel: one LLM call classifies a query into a strict action,
 never left to the LLM's own judgment beyond the fixed decision-tree rules in the prompt.
 
-`small_llm` is stubbed directly, mirroring tests/test_robust_pipeline.py's approach for
-the sibling query_extractor.py module.
+`small_llm` is stubbed directly rather than the HTTP layer beneath it.
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ import pytest
 
 from app.config import LLMEndpoint, settings
 from app.llm.client import LLMResult
-from app.schemas.query import ClarifyReason, GuardrailAction, Persona
+from app.schemas.query import ClarifyReason, GuardrailAction
 from app.services import query_guardrail
 
 
@@ -28,8 +27,8 @@ def _stub_llm(monkeypatch, payload: dict | None, *, available: bool = True):
 
 
 def test_llm_accepts_weather_full(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Bangalore",
-                            "time": "tomorrow", "verify_candidate": None,
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Bangalore"],
+                            "time_phrases": ["tomorrow"], "verify_candidate": None,
                             "clarify_reason": None, "confidence": 0.9})
     result = asyncio.run(query_guardrail.run_guardrail("kal banagalore mein barish hogi kya"))
     assert result.action == GuardrailAction.ACCEPT_WEATHER_FULL
@@ -39,8 +38,8 @@ def test_llm_accepts_weather_full(monkeypatch):
 
 
 def test_llm_reports_detected_lang(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Kolkata",
-                            "time": None, "verify_candidate": None, "clarify_reason": None,
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Kolkata"],
+                            "time_phrases": [], "verify_candidate": None, "clarify_reason": None,
                             "confidence": 0.9, "detected_lang": "bn"})
     result = asyncio.run(query_guardrail.run_guardrail("কলকাতায় এখন কি বৃষ্টি হচ্ছে"))
     assert result.detected_lang == "bn"
@@ -48,16 +47,16 @@ def test_llm_reports_detected_lang(monkeypatch):
 
 def test_llm_omitting_detected_lang_defaults_to_en(monkeypatch):
     """Back-compat: every payload in this file predating detected_lang omits the key."""
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Bangalore",
-                            "time": "tomorrow", "verify_candidate": None,
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Bangalore"],
+                            "time_phrases": ["tomorrow"], "verify_candidate": None,
                             "clarify_reason": None, "confidence": 0.9})
     result = asyncio.run(query_guardrail.run_guardrail("will it rain in Bangalore tomorrow"))
     assert result.detected_lang == "en"
 
 
 def test_llm_accepts_location_only(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "accept_location_only", "location": "Bangalore",
-                            "time": None, "verify_candidate": None,
+    _stub_llm(monkeypatch, {"action": "accept_location_only", "locations": ["Bangalore"],
+                            "time_phrases": [], "verify_candidate": None,
                             "clarify_reason": None, "confidence": 0.95})
     result = asyncio.run(query_guardrail.run_guardrail("what are the coordinates of Bangalore?"))
     assert result.action == GuardrailAction.ACCEPT_LOCATION_ONLY
@@ -65,14 +64,14 @@ def test_llm_accepts_location_only(monkeypatch):
 
 
 def test_llm_rejects_off_topic(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "reject_off_topic", "location": None, "time": None,
+    _stub_llm(monkeypatch, {"action": "reject_off_topic", "locations": [], "time_phrases": [],
                             "verify_candidate": None, "clarify_reason": None, "confidence": 0.9})
     result = asyncio.run(query_guardrail.run_guardrail("who is the prime minister of India?"))
     assert result.action == GuardrailAction.REJECT_OFF_TOPIC
 
 
 def test_llm_clarifies_garbled_input(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "clarify", "location": None, "time": None,
+    _stub_llm(monkeypatch, {"action": "clarify", "locations": [], "time_phrases": [],
                             "verify_candidate": None, "clarify_reason": "garbled_input",
                             "confidence": 0.9})
     result = asyncio.run(query_guardrail.run_guardrail("asdkj qwoeiu"))
@@ -81,7 +80,7 @@ def test_llm_clarifies_garbled_input(monkeypatch):
 
 
 def test_llm_clarifies_no_location(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "clarify", "location": None, "time": "tomorrow",
+    _stub_llm(monkeypatch, {"action": "clarify", "locations": [], "time_phrases": ["tomorrow"],
                             "verify_candidate": None, "clarify_reason": "no_location",
                             "confidence": 0.8})
     result = asyncio.run(query_guardrail.run_guardrail("will it rain tomorrow?"))
@@ -90,7 +89,7 @@ def test_llm_clarifies_no_location(monkeypatch):
 
 
 def test_llm_verifies_ambiguous_location(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "verify", "location": None, "time": None,
+    _stub_llm(monkeypatch, {"action": "verify", "locations": [], "time_phrases": [],
                             "verify_candidate": "Bangalore", "clarify_reason": None,
                             "confidence": 0.6})
     result = asyncio.run(query_guardrail.run_guardrail("weather in bnglr"))
@@ -99,7 +98,7 @@ def test_llm_verifies_ambiguous_location(monkeypatch):
 
 
 def test_llm_flags_unsupported_disaster_topic(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "unsupported_topic", "location": None, "time": None,
+    _stub_llm(monkeypatch, {"action": "unsupported_topic", "locations": [], "time_phrases": [],
                             "verify_candidate": None, "clarify_reason": None,
                             "unsupported_topic": "earthquake", "confidence": 0.9})
     result = asyncio.run(query_guardrail.run_guardrail("was there an earthquake in Delhi?"))
@@ -109,8 +108,8 @@ def test_llm_flags_unsupported_disaster_topic(monkeypatch):
 
 def test_location_and_absolute_date_are_separated(monkeypatch):
     """The A4 bug: location and a trailing absolute date must not merge."""
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Rajkot",
-                            "time": "2026-08-01", "verify_candidate": None,
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Rajkot"],
+                            "time_phrases": ["2026-08-01"], "verify_candidate": None,
                             "clarify_reason": None, "confidence": 0.95})
     result = asyncio.run(query_guardrail.run_guardrail("rainfall in Rajkot on 2026-08-01"))
     assert result.location == "Rajkot"
@@ -205,8 +204,8 @@ def test_malformed_llm_json_falls_back(monkeypatch):
 
 def test_markdown_fenced_json_is_stripped(monkeypatch):
     async def fake_small_llm(messages, **kwargs):
-        payload = json.dumps({"action": "accept_weather_full", "location": "Pune",
-                              "time": "today", "verify_candidate": None,
+        payload = json.dumps({"action": "accept_weather_full", "locations": ["Pune"],
+                              "time_phrases": ["today"], "verify_candidate": None,
                               "clarify_reason": None, "confidence": 0.9})
         return LLMResult(tier="small", available=True, text=f"```json\n{payload}\n```")
     monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
@@ -218,12 +217,95 @@ def test_markdown_fenced_json_is_stripped(monkeypatch):
 def test_unknown_action_value_falls_back(monkeypatch):
     async def fake_small_llm(messages, **kwargs):
         return LLMResult(tier="small", available=True, text=json.dumps({
-            "action": "nonsense", "location": "Delhi", "time": None,
+            "action": "nonsense", "locations": ["Delhi"], "time_phrases": [],
             "verify_candidate": None, "clarify_reason": None, "confidence": 0.8}))
     monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
     result = asyncio.run(query_guardrail.run_guardrail("weather in Delhi"))
     assert result.extraction_source == "deterministic_fallback"
     assert result.action == GuardrailAction.ACCEPT_WEATHER_FULL
+
+
+def test_llm_reports_capabilities(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Kochi"],
+                            "time_phrases": ["tomorrow"], "confidence": 0.9,
+                            "capabilities": ["marine", "wind"],
+                            "confidence_per_capability": {"marine": "high", "wind": "low"}})
+    result = asyncio.run(query_guardrail.run_guardrail("should I go sailing near Kochi tomorrow"))
+    assert result.capabilities == ["marine", "wind"]
+    assert result.confidence_per_capability == {"marine": "high", "wind": "low"}
+    assert result.capabilities_version == "v1"
+
+
+def test_invented_capability_name_is_dropped_not_fatal(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Kochi"],
+                            "time_phrases": [], "confidence": 0.9,
+                            "capabilities": ["marine", "made_up_capability"]})
+    result = asyncio.run(query_guardrail.run_guardrail("weather near Kochi"))
+    assert result.capabilities == ["marine"]
+
+
+def test_confidence_per_capability_entry_for_unselected_capability_is_dropped(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Kochi"],
+                            "time_phrases": [], "confidence": 0.9, "capabilities": ["marine"],
+                            "confidence_per_capability": {"marine": "high", "wind": "low"}})
+    result = asyncio.run(query_guardrail.run_guardrail("weather near Kochi"))
+    assert result.confidence_per_capability == {"marine": "high"}
+
+
+def test_guidance_flag_alone_triggers_retry_then_falls_back(monkeypatch):
+    """travel_safety_guidance with no data capability alongside it is genuinely malformed
+    (it carries no data of its own) — this must survive a bounded retry, not crash, and
+    land on the deterministic fallback if the retry doesn't fix it either."""
+    calls = 0
+
+    async def fake_small_llm(messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        return LLMResult(tier="small", available=True, text=json.dumps({
+            "action": "accept_weather_full", "locations": ["Kochi"], "time_phrases": [],
+            "confidence": 0.9, "capabilities": ["travel_safety_guidance"]}))
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+    result = asyncio.run(query_guardrail.run_guardrail("weather near Kochi"))
+    assert calls == 2, "one retry, then fall back — not a loop"
+    assert result.extraction_source == "deterministic_fallback"
+
+
+def test_guidance_flag_retry_succeeds_when_second_response_is_valid(monkeypatch):
+    calls = 0
+
+    async def fake_small_llm(messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return LLMResult(tier="small", available=True, text=json.dumps({
+                "action": "accept_weather_full", "locations": ["Kochi"], "time_phrases": [],
+                "confidence": 0.9, "capabilities": ["travel_safety_guidance"]}))
+        return LLMResult(tier="small", available=True, text=json.dumps({
+            "action": "accept_weather_full", "locations": ["Kochi"], "time_phrases": [],
+            "confidence": 0.9, "capabilities": ["travel_safety_guidance", "marine"]}))
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+    result = asyncio.run(query_guardrail.run_guardrail("weather near Kochi"))
+    assert calls == 2
+    assert result.extraction_source == "llm"
+    assert set(result.capabilities) == {"travel_safety_guidance", "marine"}
+
+
+def test_invalid_pairing_mode_defaults_to_locations_x_shared_time(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Delhi", "Mumbai"],
+                            "time_phrases": ["this weekend"], "confidence": 0.9,
+                            "pairing_mode": "not_a_real_mode"})
+    result = asyncio.run(query_guardrail.run_guardrail("compare Delhi and Mumbai this weekend"))
+    assert result.pairing_mode == "locations_x_shared_time"
+
+
+def test_multiple_locations_and_times_are_preserved(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Delhi", "Mumbai"],
+                            "time_phrases": ["this weekend"], "confidence": 0.9,
+                            "pairing_mode": "locations_x_shared_time"})
+    result = asyncio.run(query_guardrail.run_guardrail("compare Delhi and Mumbai this weekend"))
+    assert result.locations == ["Delhi", "Mumbai"]
+    assert result.location == "Delhi"
+    assert result.time_phrases == ["this weekend"]
 
 
 def test_resolve_confirmed_location_only():
@@ -276,59 +358,55 @@ def test_render_message_none_for_accept_actions():
         assert query_guardrail.render_guardrail_message(decision) is None
 
 
-def test_llm_reports_marine_persona(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Kochi",
-                            "time": "tomorrow", "verify_candidate": None,
-                            "clarify_reason": None, "confidence": 0.9, "persona": "marine"})
+def test_llm_reports_apparent_context(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Kochi"],
+                            "time_phrases": ["tomorrow"], "verify_candidate": None,
+                            "clarify_reason": None, "confidence": 0.9,
+                            "apparent_context": "a fisherman planning a trip"})
     result = asyncio.run(query_guardrail.run_guardrail("should I go fishing near Kochi tomorrow"))
-    assert result.persona == Persona.MARINE
+    assert result.apparent_context == "a fisherman planning a trip"
 
 
-def test_llm_omitting_persona_defaults_to_none(monkeypatch):
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Pune",
-                            "time": None, "verify_candidate": None, "clarify_reason": None,
+def test_llm_omitting_apparent_context_defaults_to_none(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Pune"],
+                            "time_phrases": [], "verify_candidate": None, "clarify_reason": None,
                             "confidence": 0.9})
     result = asyncio.run(query_guardrail.run_guardrail("weather in Pune"))
-    assert result.persona == Persona.NONE
+    assert result.apparent_context is None
 
 
-def test_invalid_persona_value_degrades_to_none_without_discarding_decision(monkeypatch):
-    """persona is additive, not load-bearing like action — an otherwise-valid decision must
-    survive a bad persona value rather than falling all the way back to the deterministic path."""
-    _stub_llm(monkeypatch, {"action": "accept_weather_full", "location": "Pune",
-                            "time": None, "verify_candidate": None, "clarify_reason": None,
-                            "confidence": 0.9, "persona": "astronaut"})
+def test_overlong_apparent_context_is_truncated_not_discarded(monkeypatch):
+    """apparent_context is additive, not load-bearing like action — an overlong value must
+    be truncated rather than lose the whole decision to a fallback re-run."""
+    _stub_llm(monkeypatch, {"action": "accept_weather_full", "locations": ["Pune"],
+                            "time_phrases": [], "verify_candidate": None, "clarify_reason": None,
+                            "confidence": 0.9, "apparent_context": "x" * 500})
     result = asyncio.run(query_guardrail.run_guardrail("weather in Pune"))
-    assert result.persona == Persona.NONE
+    assert result.apparent_context is not None and len(result.apparent_context) <= 200
     assert result.extraction_source == "llm"
     assert result.location == "Pune"
 
 
-def test_deterministic_fallback_classifies_marine_persona(monkeypatch):
+def test_deterministic_fallback_never_guesses_apparent_context(monkeypatch):
     _stub_llm(monkeypatch, None, available=False)
     result = asyncio.run(query_guardrail.run_guardrail("should I go fishing near Kochi tomorrow"))
-    assert result.persona == Persona.MARINE
+    assert result.apparent_context is None
     assert result.extraction_source == "deterministic_fallback"
 
 
-def test_deterministic_fallback_persona_none_for_ordinary_weather(monkeypatch):
-    _stub_llm(monkeypatch, None, available=False)
-    result = asyncio.run(query_guardrail.run_guardrail("will it rain in Indore tomorrow"))
-    assert result.persona == Persona.NONE
-
-
-def test_resolve_confirmed_location_reclassifies_marine_persona():
+def test_resolve_confirmed_location_never_guesses_apparent_context():
     decision = query_guardrail.resolve_confirmed_location("weather for a fishing trip near kochi", "Kochi")
-    assert decision.persona == Persona.MARINE
+    assert decision.apparent_context is None
 
 
-@pytest.mark.parametrize("answer,expected", [
-    ("alone", {"crew_size": 1}),
-    ("with 4 of us", {"crew_size": 4}),
-    ("three of us", {"crew_size": 3}),
-    ("small boat, four of us", {"crew_size": 4, "boat_size": "small"}),
-    ("a large trawler", {"boat_size": "large"}),
-    ("not sure", {}),
+@pytest.mark.parametrize("answer,domain,expected", [
+    ("alone", "marine", {"crew_size": 1}),
+    ("with 4 of us", "marine", {"crew_size": 4}),
+    ("three of us", "marine", {"crew_size": 3}),
+    ("small boat, four of us", "marine", {"crew_size": 4, "boat_size": "small"}),
+    ("a large trawler", "marine", {"boat_size": "large"}),
+    ("not sure", "marine", {}),
+    ("alone", "spray", {}),  # a domain with no declared CLARIFYING_FIELDS is a no-op
 ])
-def test_parse_crew_boat_answer(answer, expected):
-    assert query_guardrail._parse_crew_boat_answer(answer) == expected
+def test_parse_followup_answer(answer, domain, expected):
+    assert query_guardrail._parse_followup_answer(answer, domain) == expected

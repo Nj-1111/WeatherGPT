@@ -117,6 +117,66 @@ def _temperature_panel(scored) -> dict | None:
     return None
 
 
+def _range_panel(scored, variable: str, unit_default: str) -> dict | None:
+    """Generic min-max-range panel for a single-canonical-name field (humidity, pressure,
+    cloud cover) — same shape as _temperature_panel without needing to try multiple names."""
+    source = _best_source(scored, variable)
+    if source is None:
+        return None
+    series = _series(scored, variable, source)
+    values = [ev.value for ev in series if ev.value is not None]
+    return {"min": round(min(values), 1), "max": round(max(values), 1),
+            "unit": series[0].unit or unit_default, "source": source, "variable": variable,
+            "aggregation": "range over query window",
+            "evidence_ids": [ev.evidence_id for ev in series]}
+
+
+def _visibility_panel(scored) -> dict | None:
+    """Minimum (worst-case) visibility over the window — the hazard-relevant reading for
+    driving/travel, not a range or peak."""
+    source = _best_source(scored, "visibility")
+    if source is None:
+        return None
+    series = _series(scored, "visibility", source)
+    worst = min(series, key=lambda ev: ev.value if ev.value is not None else float("inf"))
+    return {"value_km": round((worst.value or 0.0) / 1000, 2), "variable": "visibility",
+            "from_unit": worst.unit, "unit": "km",
+            "aggregation": "minimum over query window", "source": source,
+            "evidence_ids": [worst.evidence_id]}
+
+
+def _heat_stress_panel(temperature: dict | None, humidity: dict | None, wind: dict | None) -> dict | None:
+    """Derived from already-fused panels, not raw evidence: heat index when hot+humid,
+    wind chill when cold+windy, absent otherwise (neither is a hazard-relevant reading).
+    NWS formulas (Fahrenheit-native), converted at the boundary since this system reports
+    Celsius everywhere else. If a window spans both a hot and a cold extreme, heat is
+    checked first — a known simplification, not expected to matter for same-day windows."""
+    if temperature is None:
+        return None
+    if temperature["max"] >= 27 and humidity is not None:
+        temp_c, rh = temperature["max"], humidity["max"]
+        tf = temp_c * 9 / 5 + 32
+        if tf >= 80:
+            hi_f = (-42.379 + 2.04901523 * tf + 10.14333127 * rh - 0.22475541 * tf * rh
+                    - 0.00683783 * tf * tf - 0.05481717 * rh * rh + 0.00122874 * tf * tf * rh
+                    + 0.00085282 * tf * rh * rh - 0.00000199 * tf * tf * rh * rh)
+        else:
+            hi_f = 0.5 * (tf + 61.0 + ((tf - 68.0) * 1.2) + (rh * 0.094))
+        return {"index": "heat_index", "value_c": round((hi_f - 32) * 5 / 9, 1), "unit": "C",
+                "basis": {"temperature_c": temp_c, "humidity_pct": rh},
+                "evidence_ids": list(temperature["evidence_ids"]) + list(humidity["evidence_ids"])}
+    if temperature["min"] <= 10 and wind is not None:
+        temp_c, wind_kmh = temperature["min"], wind["value_kmh"]
+        v_mph = wind_kmh * 0.621371
+        if v_mph >= 3:
+            tf = temp_c * 9 / 5 + 32
+            wc_f = 35.74 + 0.6215 * tf - 35.75 * (v_mph ** 0.16) + 0.4275 * tf * (v_mph ** 0.16)
+            return {"index": "wind_chill", "value_c": round((wc_f - 32) * 5 / 9, 1), "unit": "C",
+                    "basis": {"temperature_c": temp_c, "wind_kmh": wind_kmh},
+                    "evidence_ids": list(temperature["evidence_ids"]) + list(wind["evidence_ids"])}
+    return None
+
+
 def _wind_panel(scored) -> dict | None:
     source = _best_source(scored, "wind_speed")
     if source is None:
@@ -263,6 +323,11 @@ def build_wio(query_text: str, resolved_location: dict, valid_from, valid_to, ho
     weather.rain, weather.summary = _rain_panel(scored)
     weather.temperature = _temperature_panel(scored)
     weather.wind = _wind_panel(scored)
+    weather.humidity = _range_panel(scored, "humidity", "%")
+    weather.pressure = _range_panel(scored, "pressure_msl", "hPa")
+    weather.cloud_cover = _range_panel(scored, "cloud_cover", "%")
+    weather.visibility = _visibility_panel(scored)
+    weather.heat_stress = _heat_stress_panel(weather.temperature, weather.humidity, weather.wind)
     weather.marine = _marine_panel(scored)
     if not weather.summary:
         weather.summary = _fallback_summary(weather)

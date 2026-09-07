@@ -4,7 +4,7 @@ Current-status index across security, correctness, and roadmap. Supersedes and r
 `docs/security-audit-2026-09-03.md` (fully merged below). Deep-dive narrative and
 reproduction steps for each item still live in `BUG.md` (defect register) and `AUDIT.md`
 (2026-09-05 teardown) — this file is the short "what's open" list, not a replacement for
-that detail. Last updated 2026-09-07.
+that detail. Last updated 2026-09-07 (capability-selector + multi-location/time round).
 
 ## Security — 8 of 11 closed
 
@@ -30,27 +30,33 @@ that detail. Last updated 2026-09-07.
 | B3 | P1 | LLM guardrail inconsistent on Indic queries (6/15 failed in a live batch) — prompt behavior, needs a live-harness re-run |
 | B6 | P2 | `CLARIFY(no_location)` unreachable in practice — "will it rain tomorrow" hits a raw 422 instead |
 | B7 | P2 | General class: same intent, different phrasing → different guardrail action (specific reported case fixed, class still open) |
-| B8 | P2 | Multi-location questions ("compare Delhi and Mumbai") silently answer for one location |
 | B18 | P2 | Reviewer's 503 diagnostic echoes both the fabricated and re-derived value to the client |
 | B19 | P3 | `REVIEW_FAILED` is the only 503 today; nothing stops a future one from being indistinguishable |
 | B20 | P1/P3 | No `.dockerignore` — `.env` (live keys) and `tests/`/pytest get baked into the Docker image |
 
-## AUDIT.md teardown — open (A1-A6 already fixed there)
+## AUDIT.md teardown — open (A1-A6, A10 already closed there)
 
 | ID | Issue |
 |---|---|
 | A7 | `query_understanding_confidence_threshold` has zero readers; its comment claims it gates something it doesn't |
 | A8 | Rain panel reports the window's peak probability but cites `probabilities[0]` — value and citation disagree |
 | A9 | Reviewer 503s pooled with all 5xx in metrics; `wio_latency_ms_mean` divides by the wrong count |
-| A10 | `reasoning_format: "hidden"` sent to every LLM endpoint unconditionally — fallback-endpoint acceptance not verified |
 | — | `retrieve()`'s `asyncio.gather` has no total deadline — one slow source still stalls the whole request |
 | — | Explanation LLM call (~0.7-1.6s) runs on every request, uncached |
 
 ## Dead code / hygiene
 
-- `app.storage.session_store`, `app.storage.conversation_log` — built, imported nowhere
+- `app.storage.session_store`, `app.storage.conversation_log` — built, imported nowhere.
+  **Flagged, not removed 2026-09-07**: `tests/test_storage.py` frames the same
+  `SessionStore`/`ConversationLog` Protocols as a deliberate seam ("the seam that makes
+  Redis/Postgres a config change, not a rewrite"), which conflicts with this line's own
+  "dead code" framing. Needs a call on which framing is right before deleting a
+  Protocol-conformance-tested abstraction, not an incidental sweep.
 - `config.py`: `rank_weights_total`, `conversation_max_turns` — zero readers
-- `.env.example`/`.env`: `HF_TOKEN`, `HF_REPO_ID` — leftover from the removed training repo
+- ~~`.env.example`/`.env`: `HF_TOKEN`, `HF_REPO_ID` — leftover from the removed training
+  repo~~ — closed 2026-09-07, removed from both files along with the stale
+  `WEATHERGPT_EXPLANATION_TONE` entry (`.env.example` only; the setting itself was already
+  removed from `config.py` in the capability-selector round).
 
 ## Blocked on credentials / infra
 
@@ -62,10 +68,12 @@ that detail. Last updated 2026-09-07.
 ## Roadmap — not started (`io.md`, build order)
 
 1. `poi-geocoding` — landmark/POI resolution, needs a provider evaluated (Photon rejected)
-2. `multi-location` / `multi-time` — schema change, overlaps B8
-3. `new-source-visibility` → `new-source-aqi` / `new-source-sunrise-sunset` (each needs a live smoke test first) → `new-source-tides-moon-astro` (no source picked yet)
-4. `response-shape` — trim the response payload
-5. `personalization` — deferred, unscoped
+2. `new-source-aqi` / `new-source-sunrise-sunset` (each needs a live smoke test first) → `new-source-tides-moon-astro` (no source picked yet)
+3. `response-shape` — trim the response payload
+4. `personalization` — deferred, unscoped
+
+**Done since the last update**: `capability-selector`, `multi-location`/`multi-time`
+(closes B8), `new-source-visibility` — see `io.md`'s "Done: notes" for the mechanism.
 
 **Accepted, not bugs:** sub-locality queries (Kalyani/Howrah-style) cost one clarification
 round-trip by design (`ranking.py` deliberately untouched); `lang-match` only translates

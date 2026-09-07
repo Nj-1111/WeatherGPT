@@ -98,16 +98,45 @@ def test_fishing_decision_also_pulls_marine_data():
     assert "wave_height" in plan.variables
 
 
-def test_marine_persona_alone_forces_marine_data_with_no_keyword_match():
-    """The guardrail's persona classification is deliberately broader than this module's
-    own keyword sets (it also covers beach/coastal phrasing) — persona=marine must fetch
-    marine data even when the question text matches none of the marine keyword tuples."""
-    plan = build_retrieval_plan("planning a trip to the beach this weekend", "short", persona="marine")
-    assert plan.decision_context is None  # no decision-domain keyword present
+def test_capability_widens_coverage_beyond_keywords():
+    # "safe near the coast" hits no marine keyword at all — only the capability triggers it.
+    plan = build_retrieval_plan("is it safe near the coast", "short", capabilities=["marine"])
     assert "wave_height" in plan.variables
     assert "OPEN_METEO_MARINE" in plan.sources
 
 
-def test_persona_none_does_not_force_marine_data():
-    plan = build_retrieval_plan("will it rain tomorrow", "short", persona="none")
-    assert "wave_height" not in plan.variables
+def test_capability_never_removes_a_keyword_trigger():
+    plan = build_retrieval_plan("will it rain tomorrow", "short", capabilities=[])
+    assert "precipitation_amount" in plan.variables
+
+
+def test_humidity_pressure_cloud_cover_visibility_capabilities_add_their_variable():
+    plan = build_retrieval_plan("general question", "short",
+                                capabilities=["humidity", "pressure", "cloud_cover", "visibility"])
+    assert "humidity" in plan.variables
+    assert "pressure_msl" in plan.variables
+    assert "cloud_cover" in plan.variables
+    assert "visibility" in plan.variables
+
+
+def test_heat_stress_capability_pulls_temperature_wind_and_humidity():
+    plan = build_retrieval_plan("general question", "short", capabilities=["heat_stress"])
+    assert "temperature_2m" in plan.variables
+    assert "wind_speed" in plan.variables
+    assert "humidity" in plan.variables
+
+
+def test_extreme_events_capability_pulls_imd_without_warning_keyword():
+    plan = build_retrieval_plan("general question", "short", capabilities=["extreme_events"])
+    assert plan.need_warnings
+    assert "IMD" in plan.sources
+
+
+def test_travel_safety_guidance_capability_alone_adds_no_variables():
+    # Guidance-only capability carries no data of its own; it's a prompt flag, not a fetch trigger.
+    baseline = build_retrieval_plan("general question", "short", capabilities=[])
+    guided = build_retrieval_plan("general question", "short", capabilities=["travel_safety_guidance"])
+    assert set(guided.variables) == set(baseline.variables)
+    assert set(guided.sources) == set(baseline.sources)
+
+

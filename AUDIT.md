@@ -14,7 +14,7 @@ second independent source against Open-Meteo's own forecast endpoint, so `full_a
 produced by one vendor agreeing with itself and an ensemble's internal spread was reported as
 a between-source disagreement. That value drives RADE confidence and the big-LLM trigger, so
 the flagship decision path was the worst affected. **A1-A6 are now fixed** (see `CLAUDE.md`'s
-2026-09-05 session record); A7-A10 remain open.
+2026-09-05 session record); A7-A9 remain open, A10 verified with no defect found (below).
 
 ## B. Findings
 
@@ -29,7 +29,21 @@ the flagship decision path was the worst affected. **A1-A6 are now fixed** (see 
 | A7 | MED | `config.py:197` | `query_understanding_confidence_threshold` has zero readers; its comment claims it gates low-confidence classifications | open |
 | A8 | MED | `wio_builder.py:83` | Rain panel reports the window's peak probability but cites `probabilities[0]` | open |
 | A9 | MED | `main.py:75` | Reviewer rejections pooled with all 5xx; `wio_latency_ms_mean` divides by a count omitting two endpoints | open |
-| A10 | MED | `llm/client.py:72` | `reasoning_format: "hidden"` sent to every endpoint, justified only by a comment | open, **NOT VERIFIED** |
+| A10 | MED | `llm/client.py:72` | `reasoning_format: "hidden"` sent to every endpoint, justified only by a comment | **verified 2026-09-07, no defect** — see note |
+
+### A10 verification (2026-09-07)
+
+Live-called the configured fallback endpoint (`SMALL_LLM_FALLBACK_1_BASE_URL`, Gemini)
+directly with `reasoning_format: "hidden"`: it does not reject the field — HTTP 200,
+answered normally. No defect in what A10 asked about. A related but distinct problem was
+found in the same testing session and fixed: `reasoning_effort: "low"` (added separately,
+for the guardrail call's `max_tokens` budget on the *primary* Groq endpoint) also applies
+to this fallback endpoint, which has different reasoning-token economics — at
+`max_tokens=280` it returned HTTP 200 with `finish_reason: "length"` and the JSON truncated
+mid-object, a non-exceptional "success" that skipped the retry-as-failure path and instead
+correctly fell through to `_parse()`'s own unparseable-JSON handling. Fixed by raising the
+guardrail's shared `max_tokens` to 500 (`app/services/query_guardrail.py`); confirmed live
+afterward that the fallback completes cleanly (`finish_reason: "stop"`) with headroom.
 
 ### A2 correction
 
@@ -97,8 +111,6 @@ LLM call (~0.7-1.6s) runs on every request with no equivalent cache.
 
 ## G. Not verified
 
-- **A10** — whether the configured fallback LLM endpoint rejects `reasoning_format`. Needs
-  one live call to `SMALL_LLM_FALLBACK_1_BASE_URL`.
 - GEFS ensemble decode fidelity and both marine adapters were not compared against raw APIs.
 - StormGlass has never run (needs a paid key).
 - Multi-worker behaviour, and any claim about behaviour behind a proxy.

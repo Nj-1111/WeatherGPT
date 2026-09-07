@@ -42,18 +42,26 @@ def is_configured(tier: Tier) -> bool:
 
 
 async def _post(endpoint: LLMEndpoint, messages: list[dict[str, Any]],
-                temperature: float, max_tokens: int) -> str:
+                temperature: float, max_tokens: int, reasoning_effort: str | None = None) -> str:
     headers = {"Content-Type": "application/json"}
     if endpoint.api_key:
         headers["Authorization"] = f"Bearer {endpoint.api_key}"
+    body: dict[str, Any] = {"model": endpoint.model, "messages": messages,
+                            "temperature": temperature, "max_tokens": max_tokens,
+                            # Without this, a reasoning-capable model inlines a <think> block into `content`, eating the answer's token budget; endpoints that don't recognize the field just ignore it.
+                            "reasoning_format": "hidden"}
+    if reasoning_effort is not None:
+        # `reasoning_format: hidden` only hides the reasoning from `content` — the tokens
+        # are still spent from `max_tokens`. Confirmed live: a reasoning-capable small-tier
+        # model exhausted a short, tightly-budgeted structured-output call's max_tokens=200
+        # on hidden reasoning alone, returning empty content every time and silently
+        # falling back to the deterministic path. `reasoning_effort: low` fixed it. Left
+        # opt-in (not default) since the big tier is deliberately woken for real
+        # multi-step reasoning and must not have it throttled.
+        body["reasoning_effort"] = reasoning_effort
     response = await get_client().post(
         f"{endpoint.base_url.rstrip('/')}/chat/completions",
-        headers=headers,
-        json={"model": endpoint.model, "messages": messages,
-              "temperature": temperature, "max_tokens": max_tokens,
-              # Without this, a reasoning-capable model inlines a <think> block into `content`, eating the answer's token budget; endpoints that don't recognize the field just ignore it.
-              "reasoning_format": "hidden"},
-        timeout=settings.llm_timeout_seconds,
+        headers=headers, json=body, timeout=settings.llm_timeout_seconds,
     )
     response.raise_for_status()
     payload = response.json()
@@ -61,7 +69,8 @@ async def _post(endpoint: LLMEndpoint, messages: list[dict[str, Any]],
 
 
 async def generate(tier: Tier, messages: list[dict[str, Any]], *,
-                   temperature: float = 0.35, max_tokens: int = 1024) -> LLMResult:
+                   temperature: float = 0.35, max_tokens: int = 1024,
+                   reasoning_effort: str | None = None) -> LLMResult:
     started = time.monotonic()
 
     def elapsed() -> int:
@@ -80,7 +89,7 @@ async def generate(tier: Tier, messages: list[dict[str, Any]], *,
             break
         attempted += 1
         try:
-            text = await _post(endpoint, messages, temperature, max_tokens)
+            text = await _post(endpoint, messages, temperature, max_tokens, reasoning_effort)
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             logger.warning("llm.endpoint_failed",

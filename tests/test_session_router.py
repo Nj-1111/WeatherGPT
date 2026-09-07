@@ -16,7 +16,7 @@ MUMBAI = ResolvedLocation(raw="Mumbai", lat=19.076, lon=72.8777, timezone="Asia/
 
 def _query(location: str | None, text: str = "weather") -> GuardrailDecision:
     return GuardrailDecision(original_text=text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
-                             location=location, confidence=0.9)
+                             locations=[location] if location else [], confidence=0.9)
 
 
 def _window():
@@ -90,21 +90,21 @@ def test_pending_verification_absent_for_unknown_session():
     assert asyncio.run(session_router.consume_pending_verification("never-seen")) is None
 
 
-def test_pending_marine_followup_is_read_back(monkeypatch):
-    monkeypatch.setattr(session_router, "_marine_followup_store", InMemorySessionStore(8, 300))
-    asyncio.run(session_router.store_pending_marine_followup("s1", "should I go fishing near Kochi"))
-    result = asyncio.run(session_router.consume_pending_marine_followup("s1"))
-    assert result == "should I go fishing near Kochi"
+def test_pending_followup_is_read_back(monkeypatch):
+    monkeypatch.setattr(session_router, "_pending_followup_store", InMemorySessionStore(8, 300))
+    asyncio.run(session_router.store_pending_followup("s1", "should I go fishing near Kochi", "marine"))
+    result = asyncio.run(session_router.consume_pending_followup("s1"))
+    assert result == ("should I go fishing near Kochi", "marine")
 
 
-def test_pending_marine_followup_is_cleared_after_one_read(monkeypatch):
-    monkeypatch.setattr(session_router, "_marine_followup_store", InMemorySessionStore(8, 300))
-    asyncio.run(session_router.store_pending_marine_followup("s1", "should I go fishing near Kochi"))
-    asyncio.run(session_router.consume_pending_marine_followup("s1"))
-    assert asyncio.run(session_router.consume_pending_marine_followup("s1")) is None
+def test_pending_followup_is_cleared_after_one_read(monkeypatch):
+    monkeypatch.setattr(session_router, "_pending_followup_store", InMemorySessionStore(8, 300))
+    asyncio.run(session_router.store_pending_followup("s1", "should I go fishing near Kochi", "marine"))
+    asyncio.run(session_router.consume_pending_followup("s1"))
+    assert asyncio.run(session_router.consume_pending_followup("s1")) is None
 
 
-def test_pending_marine_followup_expires(monkeypatch):
-    monkeypatch.setattr(session_router, "_marine_followup_store", InMemorySessionStore(8, -1))
-    asyncio.run(session_router.store_pending_marine_followup("s1", "should I go fishing near Kochi"))
-    assert asyncio.run(session_router.consume_pending_marine_followup("s1")) is None
+def test_pending_followup_expires(monkeypatch):
+    monkeypatch.setattr(session_router, "_pending_followup_store", InMemorySessionStore(8, -1))
+    asyncio.run(session_router.store_pending_followup("s1", "should I go fishing near Kochi", "marine"))
+    assert asyncio.run(session_router.consume_pending_followup("s1")) is None

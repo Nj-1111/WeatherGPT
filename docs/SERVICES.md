@@ -318,6 +318,17 @@ sources, accumulating a `reasons` list so the plan can be audited.
   alongside `OPEN_METEO`/`MET_NORWAY`; `need_warnings` now only controls whether the
   warning-*specific* `IMD` source is added on top.
 - **[TIDY]** Hindi keywords are present but there is no language routing yet.
+- **[UPDATED, 2026-09-07]** `build_retrieval_plan` now also takes a `capabilities` list —
+  the guardrail LLM's own understanding of what a query needs (`humidity`, `visibility`,
+  `heat_stress`, etc.; the full closed enum is `DATA_CAPABILITIES`/`GUIDANCE_FLAGS` in this
+  file), OR'd alongside every keyword trigger above rather than replacing any of them. The
+  architectural boundary this section opens with still holds exactly: the LLM only ever
+  names a capability from a fixed vocabulary this file owns — it never names a source, a
+  variable, or a value, and the deterministic keyword path is unaffected when the LLM is
+  down or the list is empty. This is what actually fetches humidity/pressure/cloud
+  cover/visibility (already decoded by Open-Meteo's adapter, previously never requested by
+  any trigger) and lets `heat_stress` (a pure derived computation in `wio_builder.py`, no
+  new fetch) ask for the temperature/humidity/wind it needs.
 
 ---
 
@@ -592,6 +603,15 @@ here is invisible to all downstream validation, including the reviewer agent.
   a decision response that carried ~840 evidence entries now carries ~121.
 - **[TIDY]** Summary thresholds (`rain_likely_probability`, `rain_possible_probability`)
   are now named config settings, not inline literals.
+- **[ADDED, 2026-09-07]** `humidity`/`pressure`/`cloud_cover` panels (`_range_panel`, a
+  generic min-max panel shared across all three — same shape as the temperature panel
+  without needing to try multiple canonical names) and `visibility` (`_visibility_panel`,
+  the window's *minimum* — worst-case, not a range, since that's the hazard-relevant
+  reading for driving/travel). `heat_stress` (`_heat_stress_panel`) is the one derived
+  panel: NWS heat-index when hot+humid, NWS wind-chill when cold+windy, `None` otherwise —
+  computed from the temperature/humidity/wind panels above, not from raw evidence, so it
+  needs no new adapter fetch. If a window spans both extremes, heat is checked first — a
+  known simplification, not expected to matter for same-day windows.
 
 ---
 
@@ -724,6 +744,16 @@ guessing, and never fabricates a probability. That instinct is correct and rare.
   literals. `config.py`'s own stated principle: domain reference data (authority table,
   variable registry, RADE's utility tables) deliberately stays with the code that owns
   it, distinct from tunable scalars.
+- **[ADDED, 2026-09-07]** `DecisionResult.top_margin` — the score gap between the top two
+  ranked actions, `None` when there was only one to rank. A domain-general "how close was
+  this call" signal that replaced a marine-specific string-sniff
+  (`"caution threshold" in note`). `CLARIFYING_FIELDS` (colocated with `POLICIES`)
+  declares, per domain, which optional profile fields it knows how to use if a borderline
+  call (`top_margin` under `WEATHERGPT_RADE_BORDERLINE_SCORE_MARGIN`) is missing one —
+  today only `marine: {crew_size, boat_size}`; every other domain has no entry and the
+  mechanism is a no-op for it. `main.py` composes the actual follow-up question from this
+  (LLM-phrased, not a fixed sentence) and `session_router` threads the resumed domain back
+  so the answer applies to the right `CLARIFYING_FIELDS` entry.
 
 ---
 
@@ -764,6 +794,17 @@ raises 503 if the reviewer failed. `_synthesize` builds the answer string from t
   responses use raw uncorrected forecast evidence."
 - **[FIXED]** `_error` incremented the error metric for ordinary 404s/409s. Now only
   `if error.status_code >= 500`.
+- **[ADDED, 2026-09-07]** Multi-location/multi-time fan-out. The guardrail can now extract
+  plural `locations`/`time_phrases` plus a `pairing_mode`; `_resolve_pairs()` turns those
+  into a list of (location, time) pairs (capped at `WEATHERGPT_MAX_LOCATION_TIME_PAIRS`,
+  truncated rather than rejected past the cap), and `_build_comparison_wio()` resolves/
+  fetches/fuses every pair beyond the primary one via `asyncio.gather`. The existing `wio`
+  field is always the primary pair, resolved exactly as before this change; extra pairs
+  land in a new, additive `comparisons` field so no existing caller's response shape
+  changes. Deliberately out of scope for this round: per-pair RADE decisions/agents (would
+  multiply the explanation LLM call by the pair count) and the pending-followup clarifying
+  question (no defined rule yet for which of several borderline pairs to ask about) — both
+  are skipped whenever more than one pair is resolved, not silently guessed at.
 
 ---
 

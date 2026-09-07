@@ -14,8 +14,10 @@ class WIOQuery(BaseModel):
     valid_to: datetime | None = None
     intent: str | None = None  # e.g. precipitation, pesticide_spraying, marine
     lang: str = "en"
-    # Broader, guardrail-classified signal than intent (set only when retrieval_planner's narrower decision-keyword match fires); "none" for any unrecognized/future value, never a validation failure.
-    persona: str = "none"
+    # Mirrors GuardrailDecision.apparent_context — a short free-text phrase describing who's
+    # asking, for the explanation prompt to read; None whenever the guardrail didn't run or
+    # didn't infer anything.
+    apparent_context: str | None = None
 
 class WIOWeather(BaseModel):
     summary: str = ""
@@ -23,6 +25,10 @@ class WIOWeather(BaseModel):
     wind: dict[str, Any] | None = None
     temperature: dict[str, Any] | None = None
     humidity: dict[str, Any] | None = None
+    pressure: dict[str, Any] | None = None
+    cloud_cover: dict[str, Any] | None = None
+    visibility: dict[str, Any] | None = None
+    heat_stress: dict[str, Any] | None = None
     marine: dict[str, Any] | None = None
     other: dict[str, Any] = Field(default_factory=dict)
 

@@ -83,12 +83,13 @@ def _marine_flow_evidence():
     ]
 
 
-def test_marine_persona_two_turn_flow_asks_and_uses_crew_answer(monkeypatch):
-    """Turn 1 (fishing, no crew/boat known): a caution-band wave height still recommends
-    'go' but appends a clarifying follow-up question and stores pending session state.
+def test_two_turn_followup_flow_asks_and_uses_answer(monkeypatch):
+    """Turn 1 (fishing, no crew/boat known): a borderline-margin wave height still
+    recommends 'go' but appends a clarifying follow-up question (domain-general
+    CLARIFYING_FIELDS mechanism, not marine-specific) and stores pending session state.
     Turn 2 ("small boat, four of us", same session, no location repeated): the guardrail
-    is not re-invoked (the pending follow-up is consumed instead) and the crew/boat answer
-    flips the recommendation away from 'go'."""
+    is not re-invoked (the pending follow-up is consumed instead) and the answer flips the
+    recommendation away from 'go'."""
     async def fake_retrieve(*args, **kwargs):
         return _marine_flow_evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
     monkeypatch.setattr("app.main.retrieve", fake_retrieve)
@@ -109,7 +110,7 @@ def test_marine_persona_two_turn_flow_asks_and_uses_crew_answer(monkeypatch):
     assert response_1.status_code == 200, response_1.text
     data_1 = response_1.json()
     assert data_1["decision"]["recommended_action"] == "go"
-    assert "alone or with a crew" in data_1["answer"]
+    assert "crew" in data_1["answer"] and "boat" in data_1["answer"]
     assert guardrail_calls == 1
 
     body_2 = {"question": "small boat, four of us", "session_id": "s-marine-flow"}

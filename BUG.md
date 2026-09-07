@@ -204,9 +204,15 @@ live-verified fixed** (F5 — one added rule-6 example in `_SYSTEM_PROMPT`). Lef
 because it's prompt steering, not logic: the general class (some other phrasing tripping
 the same inconsistency) is not provably closed by a unit test the way B3 isn't either.
 
-### B8 · P2 · Multi-location questions silently answer for one location
+### B8 · P2 · Multi-location questions silently answer for one location — CLOSED 2026-09-07
 `"compare weather in Delhi and Mumbai"` returns a normal 200 for a single location with no
 indication the other was dropped. Unsupported feature presented as a successful answer.
+**Fixed**: the guardrail's `GuardrailDecision` now extracts `locations`/`time_phrases` as
+plural arrays with an LLM-declared `pairing_mode`; `main.py` fans out every extra
+(location, time) pair via `asyncio.gather` into an additive `comparisons` field on the
+response (the primary `wio` is unchanged, so no existing caller's response shape breaks).
+Live-verified: "compare Delhi and Mumbai this weekend" now resolves both locations with
+`pairing_mode=locations_x_shared_time`.
 
 ### B9 · P2 · Synchronous SQLite blocks the event loop (audit §2.8)
 `context/store.py` and `storage/sqlite.py` do blocking `sqlite3` calls inside `async def`

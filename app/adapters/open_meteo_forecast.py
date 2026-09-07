@@ -17,7 +17,7 @@ class OpenMeteoForecastAdapter(WeatherSourceAdapter):
     source_name = "OPEN_METEO"
 
     async def fetch(self, lat: float, lon: float, **kwargs) -> dict[str, Any]:
-        hourly = kwargs.get("hourly", "temperature_2m,precipitation,precipitation_probability,wind_speed_10m,relative_humidity_2m,pressure_msl,cloud_cover")
+        hourly = kwargs.get("hourly", "temperature_2m,precipitation,precipitation_probability,wind_speed_10m,relative_humidity_2m,pressure_msl,cloud_cover,visibility")
         forecast_days = kwargs.get("forecast_days", 3)
         params: dict[str, Any] = {"latitude": lat, "longitude": lon, "hourly": hourly, "forecast_days": forecast_days, "timezone": "UTC"}
         response = await get_client().get(FORECAST_URL, params=params)

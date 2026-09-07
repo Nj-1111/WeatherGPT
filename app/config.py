@@ -96,12 +96,16 @@ class Settings:
     rain_possible_probability: float = float(os.getenv("WEATHERGPT_RAIN_POSSIBLE_PROBABILITY", "0.3"))
     measurable_rain_mm: float = float(os.getenv("WEATHERGPT_MEASURABLE_RAIN_MM", "0.5"))
 
-    # RADE marine persona thresholds only (utility model is app/rade/v2.py's POLICIES): small-craft-advisory bands, ~18-33kn/~4-5ft = "caution", gale-force 34kn+/~2.5m+ = "avoid".
+    # RADE marine domain thresholds only (utility model is app/rade/v2.py's POLICIES): small-craft-advisory bands, ~18-33kn/~4-5ft = "caution", gale-force 34kn+/~2.5m+ = "avoid".
     rade_marine_wave_caution_m: float = float(os.getenv("WEATHERGPT_RADE_MARINE_WAVE_CAUTION_M", "1.25"))
     rade_marine_wave_avoid_m: float = float(os.getenv("WEATHERGPT_RADE_MARINE_WAVE_AVOID_M", "2.5"))
     rade_marine_current_caution_kmh: float = float(os.getenv("WEATHERGPT_RADE_MARINE_CURRENT_CAUTION_KMH", "3.7"))
     rade_marine_wind_caution_kmh: float = float(os.getenv("WEATHERGPT_RADE_MARINE_WIND_CAUTION_KMH", "28"))
     rade_marine_wind_avoid_kmh: float = float(os.getenv("WEATHERGPT_RADE_MARINE_WIND_AVOID_KMH", "39"))
+    # Domain-general "how close was this call" threshold: a top_margin below this asks a
+    # declared CLARIFYING_FIELDS question instead of just answering. Not domain-specific —
+    # every RADE domain shares this one score-gap threshold.
+    rade_borderline_score_margin: float = float(os.getenv("WEATHERGPT_RADE_BORDERLINE_SCORE_MARGIN", "5.0"))
 
     # Reviewer anti-hallucination gate recomputes every claimed value from its cited evidence; panels round, so an exact compare would false-fail.
     reviewer_value_rel_tol: float = float(os.getenv("WEATHERGPT_REVIEWER_VALUE_REL_TOL", "0.01"))
@@ -115,12 +119,6 @@ class Settings:
     # Per-endpoint timeout x chain length is the worst case and sits on the request path; this caps the whole chain so a long fallback list can't stall a user.
     llm_total_timeout_seconds: float = float(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", "20"))
     llm_max_words: int = int(os.getenv("WEATHERGPT_LLM_MAX_WORDS", "120"))
-    # A prompt-level instruction only, not a verified gate (no mechanical tone check like the reviewer's numeric grounding); env-editable so wording can be tuned without a code change.
-    explanation_tone_directive: str = os.getenv(
-        "WEATHERGPT_EXPLANATION_TONE", "clear, neutral, and helpful — not overly casual, not overly formal")
-    rade_marine_tone_directive: str = os.getenv(
-        "WEATHERGPT_MARINE_TONE", "safety-first and direct — lead with the go/no-go call, "
-        "state the single biggest hazard, keep it terse")
     small_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("SMALL"))
     big_llm_chain: tuple[LLMEndpoint, ...] = field(default_factory=lambda: _llm_chain("BIG"))
     # Confidence floor below which a RADE decision (deferred = 0) needs real reasoning, not a panel restate; sits between RADE's 0.55 partial/0.8 full-agreement so only partial wakes the big tier.
@@ -187,8 +185,14 @@ class Settings:
     verify_pending_ttl_seconds: int = int(os.getenv("WEATHERGPT_VERIFY_PENDING_TTL_SECONDS", "120"))
     verify_pending_max_entries: int = int(os.getenv("WEATHERGPT_VERIFY_PENDING_MAX_ENTRIES", "4096"))
 
-    # A marine persona's clarifying follow-up ("alone or with a crew?") is conversational pace, not instant yes/no — gets follow-up-context's TTL, not VERIFY's tighter one.
-    marine_followup_ttl_seconds: int = int(os.getenv("WEATHERGPT_MARINE_FOLLOWUP_TTL_SECONDS", "300"))
+    # Cap on (location, time-window) pairs a single query can fan out into — bounds API call
+    # volume/latency from one request and keeps Nominatim's 1 req/s throttle from serializing
+    # an unbounded number of geocoding calls. A starting guess, not derived from real cost
+    # data; revisit once real multi-location usage exists.
+    max_location_time_pairs: int = int(os.getenv("WEATHERGPT_MAX_LOCATION_TIME_PAIRS", "6"))
+
+    # A domain's clarifying follow-up (e.g. marine's "alone or with a crew?") is conversational pace, not instant yes/no — gets follow-up-context's TTL, not VERIFY's tighter one.
+    pending_followup_ttl_seconds: int = int(os.getenv("WEATHERGPT_PENDING_FOLLOWUP_TTL_SECONDS", "300"))
 
     cors_origins: tuple[str, ...] = tuple(
         item.strip() for item in os.getenv("WEATHERGPT_CORS_ORIGINS", "").split(",") if item.strip()

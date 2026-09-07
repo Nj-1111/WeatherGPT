@@ -36,6 +36,9 @@ class DecisionResult(BaseModel):
     rejected_actions: list[str] = Field(default_factory=list)
     scenarios: list[Scenario] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Score gap between the top two ranked actions — domain-general "how close was this
+    # call" signal. None when there was only one alternative to rank at all.
+    top_margin: float | None = None
 
 
 POLICIES: dict[str, dict[str, dict[str, float]]] = {
@@ -54,6 +57,19 @@ POLICIES: dict[str, dict[str, dict[str, float]]] = {
     },
     "travel": {
         "go": {"dry": 12, "wet": -22, "wind_penalty": -14}, "delay": {"dry": -5, "wet": 10}, "alternate_route": {"dry": 5, "wet": 8},
+    },
+}
+
+
+# Optional context fields a domain knows how to use when the call is borderline and the
+# field is unknown — declared here, not hardcoded per-domain in the guardrail/main.py, so a
+# new domain's follow-up needs a dict entry, not a new code path. Every domain without an
+# entry is a no-op: no field is ever asked about, no CLARIFYING_FIELDS-driven escalation runs.
+CLARIFYING_FIELDS: dict[str, dict[str, dict]] = {
+    "marine": {
+        "crew_size": {"kind": "solo_or_count", "solo_words": ("alone", "solo", "single", "myself")},
+        "boat_size": {"kind": "enum", "values": {"small": ("small", "dinghy", "kayak", "canoe"),
+                                                  "large": ("large", "big", "trawler")}},
     },
 }
 
@@ -175,9 +191,10 @@ def decide(wio, user_context: dict[str, Any], decision_context: str = "") -> Dec
         ranked.append(DecisionAlternative(action=action, expected_utility=expected, downside_risk=downside, score=expected - risk_lambda * downside))
     ranked.sort(key=lambda item: item.score, reverse=True)
     best = ranked[0]
+    top_margin = ranked[0].score - ranked[1].score if len(ranked) > 1 else None
     # Kept above WEATHERGPT_BIG_LLM_COMPLEXITY_CONFIDENCE_THRESHOLD (0.6): one source alone is weaker than two agreeing, but not the unresolved case the big tier exists for.
     confidence = {"full_agreement": 0.8, "single_source": 0.65}.get(wio.agreement.status, 0.55)
     return DecisionResult(recommended_action=best.action, alternatives=ranked[1:], expected_utility=best.expected_utility,
-                          risk=best.downside_risk, confidence=float(confidence),
+                          risk=best.downside_risk, confidence=float(confidence), top_margin=top_margin,
                           rationale=f"{best.action} has the highest risk-adjusted utility for {domain}; expected utility {best.expected_utility:.1f}, downside risk {best.downside_risk:.1f}.",
                           evidence_ids=evidence_ids, assumptions=assumptions, rejected_actions=[item.action for item in ranked[1:]], scenarios=scenarios)

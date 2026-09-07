@@ -1,6 +1,5 @@
 """The anti-hallucination gate: claimed values are recomputed from the evidence they cite."""
 import asyncio
-import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -166,7 +165,9 @@ def _with_llm(monkeypatch, text):
     monkeypatch.setattr("app.agents.orchestrator.is_configured", lambda tier: True)
 
 
-def test_explanation_prompt_carries_the_configured_tone_directive(monkeypatch):
+def test_explanation_system_prompt_is_domain_invariant(monkeypatch):
+    """One rich system prompt for every domain — no per-domain tone/prompt branch exists
+    anymore. Confirmed by checking the same prompt text is sent regardless of intent."""
     captured = {}
 
     async def fake_small(messages, **kwargs):
@@ -174,11 +175,15 @@ def test_explanation_prompt_carries_the_configured_tone_directive(monkeypatch):
         return LLMResult(tier="small", available=True, text="Rain is expected.", model="test-model", host="test.invalid")
     monkeypatch.setattr("app.agents.orchestrator.small_llm", fake_small)
     monkeypatch.setattr("app.agents.orchestrator.is_configured", lambda tier: True)
-    monkeypatch.setattr("app.agents.orchestrator.settings", dataclasses.replace(
-        settings, explanation_tone_directive="strictly formal and concise"))
 
     asyncio.run(run_explanation_agent(_wio(_evidence()), None))
-    assert "strictly formal and concise" in captured["system"]
+    first_prompt = captured["system"]
+    assert "Lead with the answer to their decision" in first_prompt
+    assert "without naming a label or job title" in first_prompt
+
+    marine_ceos = [_ceo("wind_speed", 5.0, 1, unit="m/s", statistic="instant")]
+    asyncio.run(run_explanation_agent(_wio(marine_ceos), None))
+    assert captured["system"] == first_prompt
 
 
 def test_explanation_prompt_carries_the_detected_language(monkeypatch):
@@ -387,23 +392,22 @@ def _marine_ceo(variable, value, hour=0, *, unit="m", statistic="instant"):
         provenance=Provenance(original_source="OPEN_METEO_MARINE"))
 
 
-def test_fact_sheet_includes_marine_block_only_for_marine_persona():
+def test_fact_sheet_includes_marine_block_when_marine_data_present():
     from app.agents.orchestrator import _fact_sheet
 
     marine_ceos = [_marine_ceo("wave_height", 1.8)]
     wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", marine_ceos)
-    wio.query.persona = "marine"
     sheet = _fact_sheet(wio, None)
     assert "Marine conditions" in sheet
     assert "1.8" in sheet
 
 
-def test_fact_sheet_omits_marine_block_for_non_marine_persona():
+def test_fact_sheet_omits_marine_block_when_marine_data_absent():
     from app.agents.orchestrator import _fact_sheet
 
-    marine_ceos = [_marine_ceo("wave_height", 1.8)]
-    wio = build_wio("wave height at Chennai", LOCATION, START, END, "short", marine_ceos)
-    assert wio.query.persona == "none"
+    wio = build_wio("temperature in Chennai", LOCATION, START, END, "short",
+                    [_ceo("temperature_2m", 30.0, 0, unit="C", statistic="instant")])
+    assert wio.weather.marine is None
     sheet = _fact_sheet(wio, None)
     assert "Marine conditions" not in sheet
 
@@ -421,16 +425,3 @@ def test_panel_evidence_ids_includes_marine_so_marine_only_query_gets_an_explana
     assert ids and set(ids) == set(wio.weather.marine["evidence_ids"])
 
 
-def test_explanation_prompt_uses_marine_tone_for_marine_persona(monkeypatch):
-    captured = {}
-
-    async def fake_small_llm(messages, **kwargs):
-        captured["system"] = messages[0]["content"]
-        return LLMResult(tier="small", available=True, text="Manageable conditions today.")
-    monkeypatch.setattr("app.agents.orchestrator.small_llm", fake_small_llm)
-
-    marine_ceos = [_marine_ceo("wave_height", 1.8)]
-    wio = build_wio("should I go fishing near Kochi", LOCATION, START, END, "short", marine_ceos)
-    wio.query.persona = "marine"
-    asyncio.run(run_explanation_agent(wio, None))
-    assert settings.rade_marine_tone_directive in captured["system"]

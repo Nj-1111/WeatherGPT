@@ -16,6 +16,10 @@ def decode_open_meteo(payload: dict[str, Any], lat: float, lon: float) -> list[C
     precip_probability = hourly.get("precipitation_probability") or []
     temp = hourly.get("temperature_2m") or []
     wind = hourly.get("wind_speed_10m") or []
+    humidity = hourly.get("relative_humidity_2m") or []
+    pressure = hourly.get("pressure_msl") or []
+    cloud_cover = hourly.get("cloud_cover") or []
+    visibility = hourly.get("visibility") or []
     issued = datetime.now(timezone.utc)
 
     # No artificial cap: forecast_days already bounds this. A fixed 48h slice used to sit here
@@ -57,5 +61,33 @@ def decode_open_meteo(payload: dict[str, Any], lat: float, lon: float) -> list[C
                 value=float(wind[i]), unit="km/h", statistic="instant",
                 geometry=geom, issued_at=issued, valid_from=valid, valid_to=valid,
                 provenance=Provenance(original_source="OPEN_METEO", original_unit="km/h", transformations=["fetched Open-Meteo"]))
+            )
+        if i < len(humidity) and humidity[i] is not None:
+            out.append(CanonicalEvidenceObject(
+                source="OPEN_METEO", evidence_class="forecast", variable="humidity",
+                value=float(humidity[i]), unit="%", statistic="instant",
+                geometry=geom, issued_at=issued, valid_from=valid, valid_to=valid,
+                provenance=Provenance(original_source="OPEN_METEO", original_unit="%", transformations=["fetched Open-Meteo"]))
+            )
+        if i < len(pressure) and pressure[i] is not None:
+            out.append(CanonicalEvidenceObject(
+                source="OPEN_METEO", evidence_class="forecast", variable="pressure_msl",
+                value=float(pressure[i]), unit="hPa", statistic="instant",
+                geometry=geom, issued_at=issued, valid_from=valid, valid_to=valid,
+                provenance=Provenance(original_source="OPEN_METEO", original_unit="hPa", transformations=["fetched Open-Meteo"]))
+            )
+        if i < len(cloud_cover) and cloud_cover[i] is not None:
+            out.append(CanonicalEvidenceObject(
+                source="OPEN_METEO", evidence_class="forecast", variable="cloud_cover",
+                value=float(cloud_cover[i]), unit="%", statistic="instant",
+                geometry=geom, issued_at=issued, valid_from=valid, valid_to=valid,
+                provenance=Provenance(original_source="OPEN_METEO", original_unit="%", transformations=["fetched Open-Meteo"]))
+            )
+        if i < len(visibility) and visibility[i] is not None:
+            out.append(CanonicalEvidenceObject(
+                source="OPEN_METEO", evidence_class="forecast", variable="visibility",
+                value=float(visibility[i]), unit="m", statistic="instant",
+                geometry=geom, issued_at=issued, valid_from=valid, valid_to=valid,
+                provenance=Provenance(original_source="OPEN_METEO", original_unit="m", transformations=["fetched Open-Meteo"]))
             )
     return out

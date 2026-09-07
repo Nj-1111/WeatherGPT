@@ -77,6 +77,46 @@ def test_marine_panel_is_none_without_marine_evidence():
     assert wio.weather.marine is None
 
 
+def test_humidity_pressure_cloud_cover_report_min_max_range():
+    ceos = ([_ceo("humidity", v, hour, unit="%", statistic="instant") for hour, v in enumerate([40.0, 65.0])]
+            + [_ceo("pressure_msl", v, hour, unit="hPa", statistic="instant") for hour, v in enumerate([1008.0, 1012.0])]
+            + [_ceo("cloud_cover", v, hour, unit="%", statistic="instant") for hour, v in enumerate([20.0, 80.0])])
+    wio = build_wio("humidity and pressure tomorrow", LOCATION, START, END, "short", ceos)
+    assert (wio.weather.humidity["min"], wio.weather.humidity["max"]) == (40.0, 65.0)
+    assert (wio.weather.pressure["min"], wio.weather.pressure["max"]) == (1008.0, 1012.0)
+    assert (wio.weather.cloud_cover["min"], wio.weather.cloud_cover["max"]) == (20.0, 80.0)
+
+
+def test_visibility_panel_reports_the_worst_case_minimum():
+    ceos = [_ceo("visibility", v, hour, unit="m", statistic="instant") for hour, v in enumerate([10000.0, 500.0, 8000.0])]
+    wio = build_wio("fog tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.weather.visibility["value_km"] == 0.5
+
+
+def test_heat_stress_reports_heat_index_when_hot_and_humid():
+    ceos = ([_ceo("temperature_2m", v, hour, unit="C", statistic="instant") for hour, v in enumerate([28.0, 33.0])]
+            + [_ceo("humidity", v, hour, unit="%", statistic="instant") for hour, v in enumerate([60.0, 70.0])])
+    wio = build_wio("how hot will it feel", LOCATION, START, END, "short", ceos)
+    assert wio.weather.heat_stress is not None
+    assert wio.weather.heat_stress["index"] == "heat_index"
+    assert wio.weather.heat_stress["value_c"] > wio.weather.temperature["max"]
+
+
+def test_heat_stress_reports_wind_chill_when_cold_and_windy():
+    ceos = ([_ceo("temperature_2m", v, hour, unit="C", statistic="instant") for hour, v in enumerate([2.0, 5.0])]
+            + [_ceo("wind_speed", 30.0, hour, unit="km/h", statistic="instant") for hour in range(2)])
+    wio = build_wio("how cold will it feel", LOCATION, START, END, "short", ceos)
+    assert wio.weather.heat_stress is not None
+    assert wio.weather.heat_stress["index"] == "wind_chill"
+    assert wio.weather.heat_stress["value_c"] < wio.weather.temperature["min"]
+
+
+def test_heat_stress_is_none_without_humidity_or_wind_extremes():
+    ceos = [_ceo("temperature_2m", v, hour, unit="C", statistic="instant") for hour, v in enumerate([18.0, 22.0])]
+    wio = build_wio("mild day tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.weather.heat_stress is None
+
+
 def test_summary_falls_back_to_temperature_when_no_rain_evidence_exists():
     """weather.summary used to stay empty whenever no rain evidence was fetched (e.g. a
     temperature-only question), which every consumer (the synthesized answer, the
@@ -289,3 +329,46 @@ def test_non_marine_domain_scores_are_unaffected_by_marine_changes():
     assert with_profile.recommended_action == without_profile.recommended_action
     assert with_profile.expected_utility == without_profile.expected_utility
     assert not any("small boat" in note for note in with_profile.assumptions)
+
+
+def test_top_margin_is_present_and_non_negative_for_a_real_decision():
+    """Every domain has >= 2 actions, so a resolved (non-deferred) decision always has a
+    runner-up to compare against — top_margin is the score gap, always >= 0 since the
+    ranked list is sorted descending."""
+    from app.rade.v2 import decide
+    ceos = _rain_with_probability(1.0, 0.8)
+    wio = build_wio("should I spray my crop tomorrow", LOCATION, START, END, "short", ceos)
+    result = decide(wio, {}, "spray")
+    assert result.recommended_action != "defer_decision"
+    assert result.alternatives  # a runner-up exists
+    assert result.top_margin is not None
+    assert result.top_margin >= 0
+
+
+def test_top_margin_is_none_when_domain_is_unmatched():
+    from app.rade.v2 import decide
+    ceos = _rain_with_probability(1.0, 0.8)
+    wio = build_wio("what is the humidity", LOCATION, START, END, "short", ceos)
+    result = decide(wio, {}, "what is the humidity")
+    assert result.recommended_action == "defer_decision"
+    assert result.top_margin is None
+
+
+def test_top_margin_is_none_when_scenarios_are_insufficient():
+    from app.rade.v2 import decide
+    ceos = [_ceo("precipitation_amount", 1.0, 0, window=1)]  # no probability record
+    wio = build_wio("should I spray my crop tomorrow", LOCATION, START, END, "short", ceos)
+    result = decide(wio, {}, "spray")
+    assert result.recommended_action == "defer_decision"
+    assert result.top_margin is None
+
+
+def test_clarifying_fields_is_empty_for_every_domain_except_marine():
+    """Only marine has declared clarifying fields today — the mechanism must be a
+    guaranteed no-op for every other domain regardless of how close their scores get,
+    since main.py's trigger checks `missing` (derived from this dict) before ever
+    asking a follow-up."""
+    from app.rade.v2 import CLARIFYING_FIELDS
+    for domain in ("spray", "irrigate", "harvest", "travel"):
+        assert CLARIFYING_FIELDS.get(domain, {}) == {}
+    assert set(CLARIFYING_FIELDS["marine"]) == {"crew_size", "boat_size"}

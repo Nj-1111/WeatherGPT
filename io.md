@@ -17,16 +17,16 @@ item belongs in `CLAUDE.md`'s session records; this file tracks what's live and 
 | `location-message-fix` | `LocationAmbiguousError` stops dead-ending as a raw 409 | — | **done differently than scoped — see note** |
 | `response-shape` | Trim/structure the response now that the warning-agent fix removes most of the current bloat; consider a `detail` request parameter | `warning-agent-geofilter` | not started |
 | `poi-geocoding` | Resolve local landmarks (ghats, parks, named points of interest), not just administrative places | — | not started — needs a POI-capable provider identified and evaluated |
-| `multi-location` | `QueryRequestV1` accepts more than one location; WIO/response shape for a side-by-side comparison | — | not started — schema-level change |
-| `multi-time` | Same location(s), multiple time windows in one request ("today vs tomorrow") | `multi-location` | not started |
-| `new-source-visibility` | Add `visibility` to `open_meteo_forecast.py`'s requested hourly fields | — | not started — config-level, cheapest new-source item |
+| `capability-selector` | Guardrail LLM call also picks which weather capabilities a query needs (closed enum), replacing keyword-only retrieval triggering while fetching stays fully deterministic | — | **done (2026-09-07)** — see note |
+| `multi-location` | `QueryRequestV1` accepts more than one location; WIO/response shape for a side-by-side comparison | — | **done (2026-09-07)** — see note |
+| `multi-time` | Same location(s), multiple time windows in one request ("today vs tomorrow") | `multi-location` | **done (2026-09-07)** — same change as `multi-location`, see note |
+| `new-source-visibility` | Add `visibility` to `open_meteo_forecast.py`'s requested hourly fields | — | **done (2026-09-07)** — folded into `capability-selector` |
 | `new-source-aqi` | New adapter against Open-Meteo's separate Air Quality API, same `REGISTRY` pattern as every existing source | — | not started, **[not live-verified]** |
 | `new-source-sunrise-sunset` | Open-Meteo's `daily` parameter set | — | not started, **[not live-verified]** |
 | `new-source-tides-moon-astro` | Moonrise/moonset, tide timetables, equinox/solstice, eclipse/panchang-level data | — | deferred, unscoped — no source identified yet |
 | `personalization` | Profile-aware phrasing/detail level beyond the existing `profile` dict passthrough | `response-shape` | deferred, unscoped |
 
-**Build order:** `poi-geocoding` → `multi-location` → `multi-time` → new-source rows
-(cheapest first: `new-source-visibility`, then `new-source-aqi`/`new-source-sunrise-sunset`,
+**Build order:** `poi-geocoding` → new-source rows (`new-source-aqi`/`new-source-sunrise-sunset`,
 each needing one live smoke test before writing the decoder — verify against the real API
 first, same pattern every adapter in this repo has followed) → `new-source-tides-moon-astro`
 (needs a source found before it can be scoped) → `response-shape` → `personalization` last.
@@ -86,6 +86,37 @@ shot. Also rejected: adopting komoot/photon as a geocoder — it indexes the sam
 OpenStreetMap data Nominatim already uses and performed worse in a live test; self-hosting
 needs new Java+OpenSearch infrastructure beyond this repo's MLOps scope. Revisit only if
 Nominatim's 1 req/s throttle becomes an actual production bottleneck (`FIXES.md` §2.3).
+
+**`capability-selector`** — `GuardrailDecision.capabilities` (closed enum in
+`retrieval_planner.py`: `DATA_CAPABILITIES` — temperature/precipitation/wind/marine/
+extreme_events/humidity/pressure/cloud_cover/visibility/heat_stress — plus the
+data-carrying-nothing `GUIDANCE_FLAGS` entry `travel_safety_guidance`) is OR'd alongside
+`build_retrieval_plan`'s existing keyword triggers, never replacing them, so the
+deterministic path is unaffected when the LLM is down. `humidity`/`pressure`/`cloud_cover`/
+`visibility` are wiring-only (already-decoded Open-Meteo fields that were fetched and
+silently dropped); `heat_stress` is a pure derived computation
+(`wio_builder._heat_stress_panel`, NWS heat-index/wind-chill formulas) from panels already
+built. Every new field on `GuardrailDecision` degrades independently — an invalid
+capability name is dropped, not fatal; only a `GUIDANCE_FLAGS`-only selection (carries no
+data on its own) triggers the bounded one-shot retry `run_guardrail` already had a slot for.
+Live-verified across 2 batch runs: capabilities fired correctly on phrasings matching
+*none* of the keyword lists ("is it humid", "fog on the road", "will it feel very hot"),
+confirming genuine generalization past keyword matching.
+
+**`multi-location`/`multi-time`** — built together as one schema pass, since both extend
+the same `GuardrailDecision` object. `locations`/`time_phrases` replaced the old singular
+`location`/`time` fields (kept as read-only `@computed_field` properties returning
+`locations[0]`/`time_phrases[0]`, so existing call sites needed no atomic migration); a
+guardrail-declared `pairing_mode` (`locations_x_shared_time` / `times_x_shared_location` /
+`full_cross_product`) says how to pair them. `app/main.py` fans every pair beyond the
+primary one out via `asyncio.gather` (`_resolve_pairs` + `_build_comparison_wio`) into an
+additive `comparisons: list[WeatherIntelligenceObject] | None` response field — the
+existing `wio` field is untouched, so no current caller's response shape breaks. Location
+dedup-by-coordinate and per-pair RADE/agents are deliberately deferred (cost optimizations,
+not correctness-blocking); the pending-followup clarifying-question mechanism only fires
+for a single resolved pair (no defined rule yet for which of several borderline pairs would
+get asked). Capped at `settings.max_location_time_pairs` (default 6) by silent truncation,
+not a rejection — closes `BUG.md`'s B8.
 
 ---
 

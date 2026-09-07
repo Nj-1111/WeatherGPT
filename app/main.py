@@ -1,13 +1,14 @@
 """WeatherGPT modular-monolith API.  Weather truth is assembled before language synthesis."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -23,7 +24,7 @@ from app.errors import WeatherGPTError
 from app.llm.client import is_configured
 from app.logging_config import configure_logging, request_id_var
 from app.orchestrator.retrieval_planner import build_retrieval_plan, has_word
-from app.rade.v2 import decide
+from app.rade.v2 import CLARIFYING_FIELDS, decide
 from app.schemas.api import (
     ContextRequest,
     DecisionRequest,
@@ -33,7 +34,7 @@ from app.schemas.api import (
     QueryRequestV1,
 )
 from app.schemas.location import ResolvedLocation
-from app.schemas.query import GuardrailAction, GuardrailDecision, Persona
+from app.schemas.query import GuardrailAction, GuardrailDecision
 from app.services import disambiguation, location_resolver, session_router
 from app.services.auth import key_scope, verify_api_key
 from app.services.cache import weather_cache
@@ -46,7 +47,7 @@ from app.services.location_resolver import (
     resolve_location,
 )
 from app.services.query_guardrail import (
-    _parse_crew_boat_answer,
+    _parse_followup_answer,
     render_guardrail_message,
     resolve_confirmed_location,
     run_guardrail,
@@ -226,6 +227,63 @@ async def _resolve_location(location: LocationInput | None, question: str,
     raise WeatherGPTError("LOCATION_REQUIRED", "Provide a city, pincode, or latitude/longitude; no location is stored or inferred.", {}, 422)
 
 
+class WeatherRequestResult(NamedTuple):
+    """Replaces the old bare `tuple[Any, list, dict, list, Any, Any]` — same unpacking
+    syntax at every call site (`wio, evidence, ... = result` works identically on a
+    NamedTuple), plus `.attribute` access, for free while every call site was already
+    being touched to add `comparisons`."""
+    wio: Any
+    evidence: list
+    retrieval_status: dict[str, Any]
+    agents: list
+    profile: dict[str, Any]
+    decision: Any
+    comparisons: list[Any] | None
+
+
+def _resolve_pairs(locations: list[str], time_phrases: list[str], pairing_mode: str,
+                   max_pairs: int) -> list[tuple[str | None, str | None]]:
+    """(location_phrase, time_phrase) pairs from the guardrail's plural extraction. The
+    first pair is always the primary one, already resolved by the existing single-location
+    code path elsewhere — this only matters for pairs [1:] (the fan-out). Falls back to a
+    single (None, None) pair when nothing plural was extracted."""
+    if not locations and not time_phrases:
+        return [(None, None)]
+    locs: list[str | None] = list(locations) or [None]
+    times: list[str | None] = list(time_phrases) or [None]
+    pairs: list[tuple[str | None, str | None]]
+    if pairing_mode == "full_cross_product" and len(locs) == len(times) and len(locs) > 1:
+        pairs = list(zip(locs, times, strict=True))
+    elif pairing_mode == "times_x_shared_location":
+        pairs = [(locs[0], t) for t in times]
+    else:  # locations_x_shared_time (default) — also the safe fallback for a malformed full_cross_product
+        pairs = [(loc, times[0]) for loc in locs]
+    return pairs[:max_pairs]
+
+
+async def _build_comparison_wio(location_phrase: str | None, time_phrase: str | None,
+                                req: QueryRequestV1, capabilities: list[str]) -> Any:
+    """One (location, time) pair's WIO for the `comparisons` fan-out — resolution + fetch +
+    fusion only, no RADE/agents (that would multiply the explanation LLM call by the pair
+    count, a cost this round doesn't budget for; deferred, not forgotten)."""
+    location = (await location_resolver.resolve_location(location_phrase) if location_phrase
+               else await extract_location(req.question)) or await _resolve_location(req.location, req.question)
+    time_text = time_phrase or req.question
+    valid_from, valid_to, horizon, time_confidence = parse_time_window(time_text, tz=req.timezone or location.timezone)
+    plan = build_retrieval_plan(req.question, horizon, capabilities=capabilities)
+    evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
+    evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))
+    evidence, semantic_rejections = validated_evidence(evidence)
+    resolved_location = location.model_dump()
+    evidence = filter_covered_warnings(evidence, resolved_location)
+    wio = build_wio(req.question, resolved_location, valid_from, valid_to, horizon, evidence, lang=req.language or "en")
+    wio.query.intent = plan.decision_context or horizon
+    wio.query.resolved_location["time_resolution_confidence"] = time_confidence
+    if semantic_rejections:
+        wio.agreement.notes = (wio.agreement.notes + " ").strip() + "Some incompatible evidence was rejected."
+    return wio
+
+
 _GUARDRAIL_ERROR_CODES = {
     GuardrailAction.REJECT_OFF_TOPIC: "QUESTION_REJECTED",
     GuardrailAction.CLARIFY: "CLARIFICATION_NEEDED",
@@ -235,10 +293,10 @@ _GUARDRAIL_ERROR_CODES = {
 _AFFIRMATION_WORDS = ("yes", "yeah", "yep", "yup", "correct", "right", "haan", "ha", "sahi")
 
 
-async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> tuple[GuardrailDecision | None, dict[str, Any]]:
-    """Runs before location/time/retrieval; None means disabled (falls back to regex-only, no-topic-gate behavior). Second return value is a profile update (a crew/boat answer from a resumed marine follow-up) kept separate from GuardrailDecision, which stays intentionally minimal. Priority order for a session's one live conversational follow-up: pending disambiguation > pending VERIFY > pending marine follow-up > a fresh guardrail run."""
+async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> tuple[GuardrailDecision | None, dict[str, Any], str | None]:
+    """Runs before location/time/retrieval; None means disabled (falls back to regex-only, no-topic-gate behavior). Second return value is a profile update (a closed-question answer from a resumed follow-up) kept separate from GuardrailDecision, which stays intentionally minimal. Third is the RADE domain a resumed follow-up belongs to — the resumed turn's own text (e.g. "small boat, four of us") often won't keyword-match any domain on its own, so it has to be threaded through rather than re-derived. Priority order for a session's one live conversational follow-up: pending disambiguation > pending VERIFY > pending follow-up > a fresh guardrail run."""
     if not settings.query_understanding_enabled:
-        return None, {}
+        return None, {}, None
     if req.session_id and settings.follow_up_context_enabled:
         scoped = _scoped_id(request, req.session_id)
         pending_disambiguation = await session_router.consume_pending_disambiguation(scoped)
@@ -249,25 +307,26 @@ async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> 
                 location_str = (matched["name"]
                                 + (f", {matched['state']}" if matched.get("state") else "")
                                 + (f", {matched['country']}" if matched.get("country") else ""))
-                return resolve_confirmed_location(original_text, location_str), {}
+                return resolve_confirmed_location(original_text, location_str), {}, None
             # No confident match: drop it and treat this message as a fresh question.
         pending = await session_router.consume_pending_verification(scoped)
         if pending is not None and has_word(req.question.casefold(), _AFFIRMATION_WORDS):
             original_text, candidate = pending
-            return resolve_confirmed_location(original_text, candidate), {}
-        pending_marine_text = await session_router.consume_pending_marine_followup(scoped)
-        if pending_marine_text is not None:
-            profile_update = _parse_crew_boat_answer(req.question)
-            decision = GuardrailDecision(original_text=pending_marine_text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
-                                         persona=Persona.MARINE, extraction_source="confirmed")
-            return decision, profile_update
-    return await run_guardrail(req.question), {}
+            return resolve_confirmed_location(original_text, candidate), {}, None
+        pending_followup = await session_router.consume_pending_followup(scoped)
+        if pending_followup is not None:
+            pending_text, domain = pending_followup
+            profile_update = _parse_followup_answer(req.question, domain)
+            decision = GuardrailDecision(original_text=pending_text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
+                                         extraction_source="confirmed")
+            return decision, profile_update, domain
+    return await run_guardrail(req.question), {}, None
 
 
-async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | tuple[Any, list, dict[str, Any], list, Any, Any]:
+async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | WeatherRequestResult:
     started = time.monotonic()
     check_question_fast(req.question)
-    guard_decision, guardrail_profile_update = await _resolve_guardrail_decision(req, request)
+    guard_decision, guardrail_profile_update, resumed_domain = await _resolve_guardrail_decision(req, request)
     # Caller override takes precedence, else the guardrail's detected language, else "en".
     effective_lang = req.language or (guard_decision.detected_lang if guard_decision else None) or "en"
 
@@ -317,8 +376,8 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     if req.session_id and settings.follow_up_context_enabled:
         await session_router.store_context(_scoped_id(request, req.session_id), location, valid_from, valid_to, horizon, time_confidence)
 
-    persona = guard_decision.persona.value if guard_decision else Persona.NONE.value
-    plan = build_retrieval_plan(req.question, horizon, persona=persona)
+    capabilities = guard_decision.capabilities if guard_decision else []
+    plan = build_retrieval_plan(req.question, horizon, capabilities=capabilities)
     evidence, retrieval_status = await retrieve(plan, lat=location.lat, lon=location.lon, valid_from=valid_from, valid_to=valid_to)
     evidence = filter_by_window(evidence, valid_from.astimezone(timezone.utc), valid_to.astimezone(timezone.utc))
     evidence, semantic_rejections = validated_evidence(evidence)
@@ -327,7 +386,7 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     evidence_store.add_many(evidence)
     wio = build_wio(req.question, resolved_location, valid_from, valid_to, horizon, evidence, lang=effective_lang)
     wio.query.intent = plan.decision_context or horizon
-    wio.query.persona = persona
+    wio.query.apparent_context = guard_decision.apparent_context if guard_decision else None
     wio.query.resolved_location["time_resolution_confidence"] = time_confidence
     wio.query.resolved_location["retrieval_plan"] = plan.model_dump()
     wio.query.resolved_location["retrieval_status"] = retrieval_status
@@ -338,48 +397,58 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
         profile.update(guardrail_profile_update)
     if req.user_id:
         profile.update({key: value["value"] for key, value in memory_store.get_context(_scoped_id(request, req.user_id)).items() if key not in profile})
+    # Multiple locations/times fan out into `comparisons` — the primary pair above is
+    # always resolved via the existing single-location path unchanged; only pairs [1:] are
+    # new work. Location dedup-by-coordinate (Phase 1.5's design) is deliberately deferred:
+    # a correctness-neutral cost optimization, not required for this to work.
+    pairs = (_resolve_pairs(guard_decision.locations, guard_decision.time_phrases,
+                            guard_decision.pairing_mode, settings.max_location_time_pairs)
+            if guard_decision is not None else [(None, None)])
+    is_multi_pair = len(pairs) > 1
+    comparisons: list[Any] | None = None
+    if is_multi_pair:
+        comparisons = await asyncio.gather(
+            *[_build_comparison_wio(loc, t, req, capabilities) for loc, t in pairs[1:]])
+
     decision = None
-    # A persona=marine query must always get a real go/delay/avoid call even when retrieval_planner's narrower keyword match never set plan.decision_context (e.g. the guardrail's broader "beach/coastal" phrasing) — else the feature silently misses the queries persona detection was widened to catch.
-    persona_forces_marine = guard_decision is not None and guard_decision.persona == Persona.MARINE
-    if plan.decision_context or persona_forces_marine:
-        decision_type = getattr(req, "decision_type", None) or plan.decision_context or "marine"
+    # A resumed follow-up's own text (e.g. "small boat, four of us") often won't keyword-match
+    # any domain on its own, so the domain threaded through from the pending store takes
+    # priority over a fresh (likely empty) keyword read.
+    if plan.decision_context or resumed_domain:
+        decision_type: str = str(getattr(req, "decision_type", None) or resumed_domain or plan.decision_context)
         decision = decide(wio, profile, decision_type)
-        if (decision_type == "marine" and decision.recommended_action == "go"
-                and any("caution threshold" in note for note in decision.assumptions)
-                and "crew_size" not in profile and "boat_size" not in profile
-                and req.session_id and settings.follow_up_context_enabled):
-            await session_router.store_pending_marine_followup(_scoped_id(request, req.session_id), req.question)
-            wio.query.resolved_location["marine_followup_prompt"] = (
-                "Are you going out alone or with a crew, and is it a small boat or a "
-                "larger one? Conditions could change the recommendation.")
+        clarifying_fields = CLARIFYING_FIELDS.get(decision_type, {})
+        missing = [field for field in clarifying_fields if field not in profile]
+        # The pending-followup mechanism was designed single-location: with >1 pair there's
+        # no defined rule for which pair's question would even get asked, so it's skipped
+        # entirely under multi-location/time rather than guessing (Phase 3's own YAGNI call).
+        if (not is_multi_pair and decision.top_margin is not None
+                and decision.top_margin < settings.rade_borderline_score_margin
+                and missing and req.session_id and settings.follow_up_context_enabled):
+            await session_router.store_pending_followup(_scoped_id(request, req.session_id), req.question, decision_type)
+            wio.query.resolved_location["followup_missing_fields"] = missing
     agents = await run_all_agents(evidence, wio, profile, wio.query.lang, decision)
     reviewer = next((result for result in agents if result.agent_name == "reviewer"), None)
     if reviewer is None or reviewer.status != "success":
         errors = reviewer.errors if reviewer else ["reviewer agent did not run"]
         raise WeatherGPTError("REVIEW_FAILED", "Evidence-grounding review failed", {"errors": errors}, 503)
     _metrics["wio_latency_ms_total"] += (time.monotonic() - started) * 1000
-    return wio, evidence, retrieval_status, agents, profile, decision
+    return WeatherRequestResult(wio, evidence, retrieval_status, agents, profile, decision, comparisons)
 
 
 def _synthesize(wio, decision=None, agents=None) -> str:
     parts: list[str] = []
-    # Marine safety framing must not depend on the LLM being configured, so it's built here from data already computed (wio, decision) and appears even on the fully deterministic path (LLM_ENABLED=false).
-    if wio.query.persona == "marine" and decision is not None and wio.weather.marine:
-        wave = wio.weather.marine.get("wave_height_m")
-        lead = "Don't go out" if decision.recommended_action in {"avoid", "delay"} else "Conditions look manageable"
-        if wave is not None:
-            lead += f" — wave height up to {wave} m"
-        if wio.official_warning.active:
-            lead += ", an official warning is active"
-        parts.append(lead + ".")
+    # Leading with the recommendation must not depend on the LLM being configured, so it's
+    # built here from data already computed (decision) and appears even on the fully
+    # deterministic path (LLM_ENABLED=false) — domain-general, not marine-specific.
+    if decision is not None:
+        parts.append(f"Recommendation: {decision.recommended_action}. {decision.rationale}")
     if wio.weather.summary:
         parts.append(wio.weather.summary)
     else:
         parts.append("No compatible weather evidence was available for the requested time window.")
     if wio.official_warning.active:
         parts.append(f"Official {wio.official_warning.severity} warning: {wio.official_warning.event}.")
-    if decision:
-        parts.append(f"Recommendation: {decision.recommended_action}. {decision.rationale}")
     cited = [e.evidence_id for e in wio.evidence[:3]]
     parts.append(f"Confidence context: {wio.agreement.status}. Backed by {len(wio.evidence)} evidence records"
                  + (f", including {', '.join(cited)}." if cited else "."))
@@ -388,9 +457,10 @@ def _synthesize(wio, decision=None, agents=None) -> str:
                         for claim in result.claims if claim.claim == "explanation"), None)
     if explanation:
         parts.append(str(explanation))
-    marine_followup_prompt = wio.query.resolved_location.get("marine_followup_prompt")
-    if marine_followup_prompt:
-        parts.append(marine_followup_prompt)
+    missing_fields = wio.query.resolved_location.get("followup_missing_fields")
+    if missing_fields:
+        parts.append("One more thing that could change this — "
+                     + " and ".join(field.replace("_", " ") for field in missing_fields) + "?")
     return " ".join(parts)
 
 
@@ -427,8 +497,9 @@ async def wio_query_v1(req: QueryRequestV1, request: Request):
     result = await _weather_request(req, request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
-    wio, evidence, retrieval_status, agents, _, _ = result
-    return {"wio": wio, "evidence_count": len(evidence), "retrieval": retrieval_status, "agents": agents, "request_id": request.state.request_id}
+    wio, evidence, retrieval_status, agents, _, _, comparisons = result
+    return {"wio": wio, "evidence_count": len(evidence), "retrieval": retrieval_status, "agents": agents,
+            "comparisons": comparisons, "request_id": request.state.request_id}
 
 
 @app.post("/query")
@@ -438,9 +509,9 @@ async def query_v1(req: QueryRequestV1, request: Request):
     result = await _weather_request(req, request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
-    wio, _, retrieval_status, agents, _, decision = result
+    wio, _, retrieval_status, agents, _, decision, comparisons = result
     return {"answer": _synthesize(wio, decision, agents), "wio": wio, "decision": decision, "agents": agents,
-            "retrieval": retrieval_status, "request_id": request.state.request_id}
+            "retrieval": retrieval_status, "comparisons": comparisons, "request_id": request.state.request_id}
 
 
 @app.post("/decision")
@@ -452,7 +523,7 @@ async def decision_endpoint(req: DecisionRequest, request: Request):
     result = await _weather_request(req, request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
-    wio, evidence, retrieval_status, agents, profile, rade_result = result
+    wio, evidence, retrieval_status, agents, profile, rade_result, _ = result
     if rade_result is None:
         rade_result = decide(wio, profile, req.decision_type or req.question)
     rade_result.evidence_ids = [item.evidence_id for item in evidence]
@@ -491,7 +562,7 @@ async def active_warnings(request: Request, location: str, question: str = "warn
     result = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
-    wio, _, retrieval, _, _, _ = result
+    wio, _, retrieval, _, _, _, _ = result
     return {"warnings": [wio.official_warning] if wio.official_warning.active else [], "retrieval": retrieval}
 
 
@@ -500,7 +571,7 @@ async def forecast(request: Request, location: str, question: str = "weather tod
     result = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
-    wio, evidence, retrieval, _, _, _ = result
+    wio, evidence, retrieval, _, _, _, _ = result
     return {"wio": wio, "retrieval": retrieval, "evidence_count": len(evidence)}
 
 

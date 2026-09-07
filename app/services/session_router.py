@@ -11,7 +11,7 @@ from app.storage.memory import InMemorySessionStore
 _store = InMemorySessionStore(settings.follow_up_context_max_entries, settings.follow_up_context_ttl_seconds)
 _verify_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
 _disambiguation_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.verify_pending_ttl_seconds)
-_marine_followup_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.marine_followup_ttl_seconds)
+_pending_followup_store = InMemorySessionStore(settings.verify_pending_max_entries, settings.pending_followup_ttl_seconds)
 
 
 async def evaluate_follow_up(session_id: str, decision: GuardrailDecision) -> ResolvedContext | None:
@@ -65,17 +65,19 @@ async def consume_pending_disambiguation(session_id: str) -> tuple[str, list[dic
     return payload["original_text"], payload["candidates"]
 
 
-async def store_pending_marine_followup(session_id: str, original_text: str) -> None:
-    await _marine_followup_store.put(session_id, {"original_text": original_text})
+async def store_pending_followup(session_id: str, original_text: str, domain: str) -> None:
+    await _pending_followup_store.put(session_id, {"original_text": original_text, "domain": domain})
 
 
-async def consume_pending_marine_followup(session_id: str) -> str | None:
-    """Reads and clears in one call — a pending marine follow-up only ever applies to the single next turn, answered or not."""
-    payload = await _marine_followup_store.get(session_id)
+async def consume_pending_followup(session_id: str) -> tuple[str, str] | None:
+    """Reads and clears in one call — a pending follow-up only ever applies to the single
+    next turn, answered or not. Returns (original_text, domain) so the resumed turn knows
+    which RADE domain/CLARIFYING_FIELDS to apply instead of defaulting to one domain."""
+    payload = await _pending_followup_store.get(session_id)
     if payload is None:
         return None
-    await _marine_followup_store.drop(session_id)
-    return payload["original_text"]
+    await _pending_followup_store.drop(session_id)
+    return payload["original_text"], payload["domain"]
 
 
 def status() -> dict:

@@ -407,6 +407,112 @@ sources whose day totals differ 2.7x (absolute 10mm threshold cannot fire at lig
 magnitudes); only the top-ranked source's value is ever reported; there is no observation
 source at all, so "is it raining now" is answered from forecast models without saying so.
 
+## Session record — 2026-09-07, de-personafication, capability-selector, multi-location
+
+Two changes shipped together because they extend the same object: `Persona` (one hardcoded
+enum value + keyword list + RADE branch + fact-sheet gate + fixed follow-up sentence *per
+persona*, added for marine/fishing and not generalizable to the next scenario) is gone
+entirely, replaced by a domain-general mechanism; and `GuardrailDecision` gained a
+capability-selector and plural `locations`/`time_phrases` in the same schema pass, since
+redesigning that one fragile LLM call twice would have meant two rounds of churn on the
+most failure-prone call in the pipeline.
+
+**De-personafication.** `apparent_context: str | None` (LLM-inferred, e.g. "planning a
+fishing trip", degrades to `None`) replaces the `Persona` enum everywhere it touched
+behavior. `DecisionResult.top_margin` (score gap between the top two ranked RADE actions)
+and a `CLARIFYING_FIELDS` dict in `rade/v2.py` (per-domain optional context fields worth
+asking about on a borderline call — today only `marine: {crew_size, boat_size}`) replace
+marine's hardcoded follow-up question with a domain-general mechanism that is a no-op for
+every domain without an entry. The follow-up question is now LLM-composed prose in its own
+words, not a fixed sentence; `session_router`'s pending-followup store threads the resumed
+domain explicitly (`consume_pending_followup` returns `(text, domain)`), fixing a real
+latent bug where every resumed follow-up silently defaulted to `"marine"`. One rich,
+domain-invariant `_EXPLANATION_SYSTEM` replaces the per-domain tone-directive branch;
+`WEATHERGPT_EXPLANATION_TONE`/`WEATHERGPT_MARINE_TONE` are gone (removed from `config.py`
+and `.env.example` in this round — `.env.example` still had the former, stale, until this
+cleanup).
+
+**Capability-selector.** `retrieval_planner.py` gained a closed vocabulary
+(`DATA_CAPABILITIES`: temperature/precipitation/wind/marine/extreme_events/humidity/
+pressure/cloud_cover/visibility/heat_stress; `GUIDANCE_FLAGS`: `travel_safety_guidance`,
+which carries no data and is invalid alone). The guardrail LLM selects from this list
+alongside its existing `action` classification — one more field on the same call, not a
+second round-trip — and `build_retrieval_plan(..., capabilities=...)` ORs each selection
+into the existing keyword triggers, never replacing them, so the deterministic path is
+unaffected when the LLM is down. This replaces keyword-only retrieval triggering (confirmed
+missing: "is it safe near the coast" hit no marine keyword, "fog on the road" hit nothing
+at all) with genuine understanding while fetching stays exactly as deterministic as before.
+`humidity`/`pressure`/`cloud_cover`/`visibility` were wiring-only — Open-Meteo's adapter
+already requested and decoded them, nothing ever triggered fetching them; `heat_stress` is
+a pure derived computation (`wio_builder._heat_stress_panel`, NWS heat-index/wind-chill
+formulas) from panels already built, no new fetch. Every new `GuardrailDecision` field
+degrades independently (an invented capability name is dropped, not fatal); only a
+`GUIDANCE_FLAGS`-only selection is genuinely malformed and triggers `run_guardrail`'s
+existing bounded one-shot retry before falling back deterministically.
+
+**Multi-location/multi-time.** `locations`/`time_phrases` (plural arrays) replaced the
+singular `location`/`time` fields, kept as read-only `@computed_field` properties
+(`locations[0]`/`time_phrases[0]`) so no existing call site needed an atomic migration. A
+guardrail-declared `pairing_mode` (`locations_x_shared_time` / `times_x_shared_location` /
+`full_cross_product`) says how to pair them; `main.py`'s `_resolve_pairs` turns that into
+concrete pairs (malformed `full_cross_product` — mismatched list lengths — falls back to
+`locations_x_shared_time` rather than crashing `zip(strict=True)`), capped at
+`settings.max_location_time_pairs` (new setting, default 6) by truncation. Every pair
+beyond the primary one fans out through `asyncio.gather` (`_build_comparison_wio`:
+resolve + fetch + fuse only, deliberately no RADE/agents — multiplying the explanation LLM
+call by the pair count wasn't in this round's budget) into a new, additive `comparisons`
+field on `/query`/`/wio/query` — the existing `wio` field is unchanged, so no current
+caller's response shape breaks. The pending-followup clarifying question is skipped
+whenever more than one pair resolves (no defined rule yet for which borderline pair to ask
+about). This closes `BUG.md`'s B8.
+
+**Verified:** `pytest -q` 382 passed (26 new, covering capability triggering, the five new
+WIO panels including both heat-index and wind-chill branches, `_resolve_pairs` for all
+three pairing modes, the `comparisons` fan-out end-to-end, and the guardrail's
+validate-then-retry-then-fallback path for capabilities) · `ruff`/`mypy` clean. **Live
+batch-tested** the capability-selector against the real Groq/Gemini chain, 2 runs of 14
+queries each spanning every wired capability plus ambiguous/multi-location/multi-time
+phrasing (per this file's own precedent — B3 and the reasoning_effort bug both showed a
+single smoke test proves nothing about LLM-classification reliability). Every query reached
+the real LLM in both runs; `humidity`/`cloud_cover`/`visibility`/`heat_stress` all fired
+correctly on phrasings matching *none* of `retrieval_planner.py`'s keyword lists ("is it
+humid", "how much cloud cover", "fog on the road", "will it feel very hot"), confirming
+genuine generalization past keyword matching; multi-location/time extraction was correct
+and consistent both runs.
+
+**A second `reasoning_effort` token-budget bug, same class as Phase 1's, found and fixed
+during that live testing.** `reasoning_effort: "low"` (added earlier to stop the Groq
+primary endpoint's hidden reasoning from starving `max_tokens`) is applied uniformly across
+the whole fallback chain in `llm/client.py`, but the Gemini fallback endpoint has different
+reasoning-token economics under the same budget. Reproduced live: at `max_tokens=280`,
+Gemini returned HTTP 200 with `finish_reason: "length"` and the guardrail JSON truncated
+mid-object — a non-exceptional "success" that `raise_for_status()` never catches, so it
+wasn't retried as a network failure; it correctly fell through to `_parse()`'s own
+unparseable-JSON handling and degraded to the deterministic path. Fixed by raising the
+guardrail's shared `max_tokens` from 280 to 500 (`app/services/query_guardrail.py`);
+confirmed live afterward that Gemini completes cleanly (`finish_reason: "stop"`,
+~162 completion tokens) with headroom. Closes `AUDIT.md`'s A10 (previously "not verified")
+with no defect in what A10 originally asked about — the defect found was adjacent, not the
+one A10 named.
+
+**Housekeeping.** `.env`/`.env.example` had a dead `HF_TOKEN`/`HF_REPO_ID` block left over
+from the ML training pipeline moved to a separate repo weeks ago (`kaggle_kernel_m2/`,
+referenced in a comment, no longer exists) — removed from both files, along with
+`.env.example`'s stale `WEATHERGPT_EXPLANATION_TONE` line. A stale docstring in
+`tests/test_query_guardrail.py` referencing a deleted sibling test file and module
+(`test_robust_pipeline.py`, `query_extractor.py`) was corrected. `io.md`'s `multi-location`/
+`multi-time`/`new-source-visibility` rows moved from "not started" to done, and a
+`capability-selector` row was added; `docs/SERVICES.md` gained changelog entries in the
+`retrieval_planner.py`, `rade/v2.py`, `wio_builder.py` and `main.py` sections for every
+mechanism above; `TUNING_GUIDE.md` gained rows for the new tunables. **Flagged, not
+acted on**: `BUG.md`/`FIXES.md` document `app.storage.session_store`/`conversation_log` as
+dead code, but `tests/test_storage.py`'s own docstring frames the same
+`SessionStore`/`ConversationLog` Protocols as a deliberate seam ("the seam that makes
+Redis/Postgres a config change, not a rewrite") — the two documents disagree, and deciding
+which framing is right (then deleting a Protocol-conformance-tested abstraction, or
+formally re-labeling it a seam) needs a call, not an incidental sweep; left for a dedicated
+pass.
+
 ## Outstanding work register
 
 Merged here from the former `cloud.md` (deleted 2026-09-05). This is what **remains**; the
@@ -495,7 +601,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 **Tests:**
 ```bash
-pytest -q                                # full suite (256+ tests as of last verified run)
+pytest -q                                # full suite (382+ tests as of last verified run)
 pytest tests/test_ceo.py::test_comparable_gate   # single test
 ```
 `testpaths=["tests"]` and `pythonpath=["."]` are set in `pyproject.toml`, so `pytest` runs correctly from repo root without extra flags.
@@ -544,7 +650,7 @@ location_resolver → time_parser → retrieval_planner (deterministic — LLM n
 
 **Agents (`app/agents/orchestrator.py`)** — seven deterministic Python functions that each derive a claim from the already-built WIO, plus `run_explanation_agent`, the one seam where a language model runs. `reviewer_agent` is a hard gate on two counts: a claim citing an `evidence_id` not present in the retrieved evidence flips the request to a 503, **and** the value attached to that citation is recomputed from the cited evidence (`app/agents/verification.py`) and must match. LLM prose is checked instead for quantities the pipeline never produced. `run_explanation_agent` is inert unless `LLM_ENABLED=true` and the small LLM tier (`SMALL_LLM_MODEL`/`_BASE_URL`/`_KEY` in `.env`) is configured; it writes prose only, never selects a source, never originates a number, and degrades to the deterministic template answer on any failure.
 
-**RADE (`app/rade/v2.py`, function `decide`)** — the risk-aware decision engine for questions like "should I spray." Builds 2 (or, with ensemble member data, 5-bin) scenarios from `wio.weather.rain`, scores each action as `expected_utility − risk_lambda·downside_risk`, picks the argmax. Returns `defer_decision` rather than guessing when evidence is insufficient — never fabricates a probability or amount. This is the *only* RADE implementation in `app/` — an older parallel v1 (`enumerator.py`/`utility.py`/`policy.py`) existed and was silently computed-but-discarded on every request; it's been removed from `app/` (still present, unmodified, in the separate frozen `kaggle_kernel/app/` snapshot, whose own `main.py` genuinely depends on it — don't delete that copy).
+**RADE (`app/rade/v2.py`, function `decide`)** — the risk-aware decision engine for questions like "should I spray." Builds 2 (or, with ensemble member data, 5-bin) scenarios from `wio.weather.rain`, scores each action as `expected_utility − risk_lambda·downside_risk`, picks the argmax. Returns `defer_decision` rather than guessing when evidence is insufficient — never fabricates a probability or amount. This is the *only* RADE implementation in the repo — an older parallel v1 (`enumerator.py`/`utility.py`/`policy.py`) existed and was silently computed-but-discarded on every request; it and its frozen `kaggle_kernel/` snapshot were both deleted (see "Known state" below).
 
 ### Bias-correction model — integration path only, training lives elsewhere (`model.md`, `app/services/model_client.py`)
 

@@ -21,21 +21,53 @@ judgment beyond what each rule states.
    -> action="verify", verify_candidate="<your best-guess corrected place name>"
 6. The text asks ONLY for a place's identity or coordinates -- no weather variable, no
    forecast or time question
-   -> action="accept_location_only", location="<place>"
+   -> action="accept_location_only", locations=["<place>"]
    "where is Coimbatore" and "what are the coordinates of Bangalore" are BOTH this rule
    (place identity/location lookup) — asking where a place IS is never rule 3 (off-topic),
    even though it doesn't ask about weather.
 7. Otherwise (in-scope, place identified with confidence)
-   -> action="accept_weather_full", location="<place>", time="<time phrase if any, else null>"
+   -> action="accept_weather_full", locations=["<place>", ...], time_phrases=["<phrase>", ...]
 
 Hinglish/Romanized Hindi is common: "kal" = tomorrow, "parso" = day after tomorrow,
 "barish"/"baarish" = rain, "mausam" = weather. Location and time are always separate
-fields even when adjacent: "Rajkot on 2026-08-01" -> location="Rajkot", time="2026-08-01".
+fields even when adjacent: "Rajkot on 2026-08-01" -> locations=["Rajkot"], time_phrases=["2026-08-01"].
+
+`locations` and `time_phrases` are always arrays, even for one value — "weather in Mumbai
+tomorrow" is locations=["Mumbai"], time_phrases=["tomorrow"]. A single question can name
+more than one of either: "compare Delhi and Mumbai this weekend" is
+locations=["Delhi","Mumbai"], time_phrases=["this weekend"]; "Pune today and tomorrow" is
+locations=["Pune"], time_phrases=["today","tomorrow"]. When there's more than one of both,
+name each place with its own time only if the text actually pairs them individually
+("Mumbai tomorrow and Delhi on Friday") — otherwise leave both plural and let
+`pairing_mode` say how they combine. Leave both as empty arrays for rules 1-5 (no accepted
+weather answer is being given).
+
+Set "pairing_mode" whenever more than one location or time phrase is present: multiple
+locations sharing one time window is "locations_x_shared_time" (the common case — "compare
+Delhi and Mumbai" defaults here); one location with multiple time windows is
+"times_x_shared_location"; only use "full_cross_product" when the text explicitly pairs
+specific places with specific times individually. Default to "locations_x_shared_time" when
+only zero or one of each is present.
+
+Set "capabilities" (only for rules 6/7) to every capability from this closed list that the
+text's weather need actually requires — never invent a name outside this list:
+temperature, precipitation, wind, marine, extreme_events, humidity, pressure, cloud_cover,
+visibility, heat_stress, travel_safety_guidance. Select `marine` for fishing/sailing/boating/
+sea/coastal questions, `extreme_events` for cyclone/storm/flood/heatwave-risk questions,
+`heat_stress` alongside `temperature` when heat/cold safety is the actual concern (not just
+"what's the temperature"), `visibility` for fog/haze/driving-conditions questions. Select
+"travel_safety_guidance" ONLY together with at least one other capability from this list —
+it is never valid alone, since it carries no data of its own, only a request for general
+practical advice alongside real data (e.g. a high-altitude trip, a desert crossing, a
+coastal outing). Optionally set "confidence_per_capability" ("low"/"medium"/"high" per
+selected capability) when you're not fully certain a capability applies.
 
 After the action is determined (only ever for rules 6 or 7 above — every other rule means
-no weather answer is being given, so persona does not apply), additionally classify
-persona: if the text is about fishing, sailing, boating, or beach/coastal activity, set
-persona="marine"; otherwise persona="none".
+no weather answer is being given), additionally set "apparent_context" to a short (under 20
+words) phrase describing who is asking and what they're deciding, inferred from the text
+itself — e.g. "a driver checking road conditions", "planning an outdoor wedding". Never
+state a job title or label unless the text states it. Use null if nothing beyond general
+weather can be inferred.
 
 Also detect the dominant language of the input text and report it as an ISO 639-1 code in
 "detected_lang" (e.g. "en", "bn", "hi"). Romanized/Hinglish text using Hindi vocabulary in
