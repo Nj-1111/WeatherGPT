@@ -230,13 +230,27 @@ def _marine_panel(scored) -> dict | None:
 
 
 def _fallback_summary(weather: WIOWeather) -> str:
-    """weather.summary is written by _rain_panel alone, so a rain-less question left it empty and every consumer read that as "no evidence" despite a populated temperature/wind/marine panel; fixed once here for every consumer."""
+    """weather.summary is written by _rain_panel alone, so a rain-less question left it empty and every consumer read that as "no evidence" despite a populated panel elsewhere; fixed once here for every consumer. Every panel build_wio populates must have an entry here — a capability-only query (e.g. visibility/humidity with no rain/temp/wind fetched) would otherwise report false "no evidence" again, live-verified 2026-09-08 for visibility."""
     parts: list[str] = []
     if weather.temperature:
         t = weather.temperature
         parts.append(f"Temperature ranging {t['min']}-{t['max']}{t['unit']}")
     if weather.wind:
         parts.append(f"wind up to {weather.wind['value_kmh']} km/h")
+    if weather.humidity:
+        h = weather.humidity
+        parts.append(f"humidity {h['min']}-{h['max']}{h['unit']}")
+    if weather.pressure:
+        p = weather.pressure
+        parts.append(f"pressure {p['min']}-{p['max']} {p['unit']}")
+    if weather.cloud_cover:
+        c = weather.cloud_cover
+        parts.append(f"cloud cover {c['min']}-{c['max']}{c['unit']}")
+    if weather.visibility:
+        parts.append(f"visibility down to {weather.visibility['value_km']} km")
+    if weather.heat_stress:
+        hs = weather.heat_stress
+        parts.append(f"{hs['index'].replace('_', ' ')} {hs['value_c']}{hs['unit']}")
     if weather.marine and "wave_height_m" in weather.marine:
         parts.append(f"wave height up to {weather.marine['wave_height_m']} m")
     return "; ".join(parts) + "." if parts else ""

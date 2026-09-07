@@ -93,6 +93,18 @@ def test_visibility_panel_reports_the_worst_case_minimum():
     assert wio.weather.visibility["value_km"] == 0.5
 
 
+def test_visibility_only_question_is_not_falsely_reported_as_no_evidence():
+    """Live-verified regression: _fallback_summary only covered temperature/wind/marine,
+    so a capability-only fetch (visibility, humidity, pressure, cloud_cover, heat_stress
+    with no rain/temperature/wind keyword) left weather.summary empty and every consumer
+    read that as "no evidence" despite a fully populated panel — same class of bug as the
+    rain-less-question fix, reintroduced when these panels were added."""
+    ceos = [_ceo("visibility", v, hour, unit="m", statistic="instant") for hour, v in enumerate([10000.0, 500.0])]
+    wio = build_wio("how foggy will it be tomorrow", LOCATION, START, END, "short", ceos)
+    assert wio.weather.summary != ""
+    assert "0.5" in wio.weather.summary
+
+
 def test_heat_stress_reports_heat_index_when_hot_and_humid():
     ceos = ([_ceo("temperature_2m", v, hour, unit="C", statistic="instant") for hour, v in enumerate([28.0, 33.0])]
             + [_ceo("humidity", v, hour, unit="%", statistic="instant") for hour, v in enumerate([60.0, 70.0])])

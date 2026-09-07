@@ -330,6 +330,25 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     # Caller override takes precedence, else the guardrail's detected language, else "en".
     effective_lang = req.language or (guard_decision.detected_lang if guard_decision else None) or "en"
 
+    # --- session context override: if a guardrail error (CLARIFY / etc.) fires but the
+    #     session carries a prior location, treat this as a follow-up instead of failing.
+    #     This must happen *before* the error gate below, because the deterministic
+    #     fallback (LLM unavailable) often returns CLARIFY for short follow-ups like
+    #     "And tomorrow?" that name no location.
+    has_explicit_location = bool(req.location and (req.location.raw or req.location.has_coordinates()))
+    cached_context = None
+    if (req.session_id and guard_decision is not None
+            and not has_explicit_location and settings.follow_up_context_enabled
+            and guard_decision.action in _GUARDRAIL_ERROR_CODES
+            and guard_decision.action not in (GuardrailAction.REJECT_OFF_TOPIC,)):
+        # Try to recover from CLARIFY/UNSUPPORTED_TOPIC via session context.
+        cached_context = await session_router.evaluate_follow_up(
+            _scoped_id(request, req.session_id), guard_decision)
+        if cached_context is not None:
+            guard_decision = GuardrailDecision(
+                original_text=req.question, action=GuardrailAction.ACCEPT_WEATHER_FULL,
+                extraction_source="session_override")
+
     if guard_decision is not None and guard_decision.action in _GUARDRAIL_ERROR_CODES:
         if guard_decision.action == GuardrailAction.VERIFY and req.session_id and settings.follow_up_context_enabled:
             await session_router.store_pending_verification(
@@ -345,11 +364,11 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
                                        session_id=_scoped_id(request, req.session_id) if req.session_id else None)
 
     # guard_decision is None (disabled) or ACCEPT_WEATHER_FULL here; an explicit request-level location always wins — the follow-up short-circuit only fires when the caller gave no location this turn at all.
-    has_explicit_location = bool(req.location and (req.location.raw or req.location.has_coordinates()))
-    cached_context = None
-    if (req.session_id and guard_decision is not None and not has_explicit_location
-            and settings.follow_up_context_enabled):
-        cached_context = await session_router.evaluate_follow_up(_scoped_id(request, req.session_id), guard_decision)
+    if cached_context is None:
+        has_explicit_location = bool(req.location and (req.location.raw or req.location.has_coordinates()))
+        if (req.session_id and guard_decision is not None and not has_explicit_location
+                and settings.follow_up_context_enabled):
+            cached_context = await session_router.evaluate_follow_up(_scoped_id(request, req.session_id), guard_decision)
 
     if cached_context is not None:
         location = ResolvedLocation(
