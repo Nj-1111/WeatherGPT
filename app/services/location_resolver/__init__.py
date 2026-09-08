@@ -7,7 +7,7 @@ import time
 from app.config import settings
 from app.schemas.location import ResolvedLocation
 from app.services.input_pipeline import normalize
-from app.services.location_resolver import detect, ranking, seed
+from app.services.location_resolver import detect, ranking
 from app.services.location_resolver.cache import location_cache
 from app.services.location_resolver.providers.base import LocationCandidate
 from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder
@@ -119,16 +119,6 @@ async def _resolve_pincode(raw: str, pincode: str) -> ResolvedLocation:
                 resolution_method="pincode", country="India",
             )
 
-    seeded = seed.seed_pincode(pincode)
-    if seeded:
-        logger.info("location.seed_fallback", extra={"method": "pincode"})
-        return ResolvedLocation(
-            raw=raw, lat=seeded["lat"], lon=seeded["lon"], district=seeded["district"],
-            state=seeded["state"], pincode=pincode, confidence=0.9, source="pincode_seed",
-            normalized_name=seeded["district"],
-            administrative_hierarchy=[seeded["district"], seeded["state"]],
-            resolution_method="pincode", country="India",
-        )
     raise LocationNotFoundError(raw, f"PIN code {pincode} could not be resolved")
 
 
@@ -160,16 +150,6 @@ async def _resolve_place(raw: str) -> ResolvedLocation:
     if ambiguous:
         raise LocationAmbiguousError(raw, [candidate.summary() for _, candidate in ambiguous[:5]])
 
-    seeded = seed.seed_place(query)
-    if seeded:
-        logger.info("location.seed_fallback", extra={"method": "gazetteer"})
-        return ResolvedLocation(
-            raw=raw, lat=seeded["lat"], lon=seeded["lon"], district=seeded["district"],
-            state=seeded["state"], confidence=0.9, source="gazetteer_seed",
-            normalized_name=seeded["name"],
-            administrative_hierarchy=[seeded["district"], seeded["state"]],
-            resolution_method="offline_gazetteer", country="India",
-        )
     raise LocationNotFoundError(raw, "No geocoding provider could resolve this location")
 
 

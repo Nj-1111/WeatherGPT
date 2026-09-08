@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.config import settings
 from app.services.cache import TTLCache
 
 
@@ -24,7 +23,3 @@ class InMemorySessionStore:
 
     def status(self) -> dict[str, Any]:
         return {**self._cache.status(), "backend": "memory", "ttl_seconds": self._ttl}
-
-
-def build_session_store() -> InMemorySessionStore:
-    return InMemorySessionStore(settings.session_max_entries, settings.session_ttl_seconds)

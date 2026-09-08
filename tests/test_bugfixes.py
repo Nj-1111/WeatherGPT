@@ -134,12 +134,6 @@ def test_c3_dead_resolved_location_fields_are_gone():
     assert not fields & {"block", "candidates", "ambiguity_status"}
 
 
-def test_c4_gazetteer_lives_with_its_only_consumer():
-    from app.services.location_resolver import seed
-    assert seed.seed_place("nagpur")["lat"] == pytest.approx(21.1458)
-    assert not hasattr(__import__("app.schemas.location", fromlist=["x"]), "GAZETTEER")
-
-
 async def _post(body):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
         return await client.post("/wio/query", json=body)

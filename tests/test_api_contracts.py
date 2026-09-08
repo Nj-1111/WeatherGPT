@@ -5,6 +5,12 @@ import httpx
 
 from app.main import app
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
+from app.schemas.location import ResolvedLocation
+
+
+async def _fake_resolve_nagpur(phrase):
+    return ResolvedLocation(raw=phrase, lat=21.1458, lon=79.0882, timezone="Asia/Kolkata",
+                            normalized_name="Nagpur", state="Maharashtra", country="India")
 
 
 def _evidence():
@@ -32,6 +38,7 @@ def test_wio_is_evidence_backed(monkeypatch):
     async def fake_retrieve(*args, **kwargs):
         return _evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
     monkeypatch.setattr("app.main.retrieve", fake_retrieve)
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", _fake_resolve_nagpur)
     response = asyncio.run(_post("/wio/query", {"question": "Will it rain in Nagpur tomorrow?"}))
     assert response.status_code == 200, response.text
     data = response.json()
@@ -56,6 +63,7 @@ def test_temperature_only_answer_is_not_falsely_reported_as_no_evidence(monkeypa
     async def fake_retrieve(*args, **kwargs):
         return _temperature_only_evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
     monkeypatch.setattr("app.main.retrieve", fake_retrieve)
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", _fake_resolve_nagpur)
     response = asyncio.run(_post("/query", {"question": "what is the temperature in Nagpur right now"}))
     assert response.status_code == 200, response.text
     answer = response.json()["answer"]

@@ -12,6 +12,7 @@ import httpx
 from app.config import settings
 from app.main import app
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
+from app.schemas.location import ResolvedLocation
 
 START = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
 
@@ -26,6 +27,11 @@ def _evidence():
 
 async def _fake_retrieve(*args, **kwargs):
     return _evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
+
+
+async def _fake_resolve_nagpur(phrase):
+    return ResolvedLocation(raw=phrase, lat=21.1458, lon=79.0882, timezone="Asia/Kolkata",
+                            normalized_name="Nagpur", state="Maharashtra", country="India")
 
 
 async def _request(method, path, *, headers=None, json=None):
@@ -71,6 +77,7 @@ def test_health_and_root_exempt_from_key_gate(monkeypatch):
 def test_valid_key_unchanged_response_shape(monkeypatch):
     _with_keys(monkeypatch, ("key-a",))
     monkeypatch.setattr("app.main.retrieve", _fake_retrieve)
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", _fake_resolve_nagpur)
     response = asyncio.run(_request("POST", "/wio/query", headers={"Authorization": "Bearer key-a"},
                                      json={"question": "Will it rain in Nagpur tomorrow?"}))
     assert response.status_code == 200
@@ -81,6 +88,7 @@ def test_gate_off_by_default(monkeypatch):
     """No WEATHERGPT_API_KEYS configured (the test-suite default) — unauthenticated
     requests must keep working exactly as before this change."""
     monkeypatch.setattr("app.main.retrieve", _fake_retrieve)
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", _fake_resolve_nagpur)
     response = asyncio.run(_request("POST", "/wio/query", json={"question": "Will it rain in Nagpur tomorrow?"}))
     assert response.status_code == 200
 
@@ -90,6 +98,7 @@ def test_cross_key_context_isolation(monkeypatch):
     two different valid keys, must not see each other's stored context facts."""
     _with_keys(monkeypatch, ("key-a", "key-b"))
     monkeypatch.setattr("app.main.retrieve", _fake_retrieve)
+    monkeypatch.setattr("app.services.location_resolver.resolve_location", _fake_resolve_nagpur)
     shared_user_id = "shared-user-42"
 
     write = asyncio.run(_request("POST", "/context", headers={"Authorization": "Bearer key-a"},

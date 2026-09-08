@@ -256,13 +256,13 @@ def test_provider_timeout_is_isolated(stub_chain):
         asyncio.run(resolve_location("Utterly Unknown Placename"))
 
 
-def test_all_providers_down_falls_back_to_offline_seed(stub_chain):
-    """Seed data keeps the core demo cities working with zero network."""
+def test_all_providers_down_raises_even_for_a_well_known_city(stub_chain):
+    """No offline gazetteer fallback (removed 2026-09-08) — every provider down means
+    LocationNotFoundError, never a hardcoded coordinate guess, even for a major city."""
     import httpx
     stub_chain(_StubGeocoder(error=httpx.ConnectError("offline")))
-    loc = asyncio.run(resolve_location("nagpur"))
-    assert loc.source == "gazetteer_seed"
-    assert round(loc.lat, 3) == 21.146
+    with pytest.raises(LocationNotFoundError):
+        asyncio.run(resolve_location("nagpur"))
 
 
 def test_unknown_place_with_all_providers_down_still_raises(stub_chain):

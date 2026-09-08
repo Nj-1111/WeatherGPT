@@ -348,10 +348,29 @@ traffic (no circuit breaker, no per-endpoint budget beyond the shared bump above
 
 ## Dead code (not defects, but violates the coding rules in `CLAUDE.md`, rule 21)
 
-- **`app.storage.session_store`** — a fully built `InMemorySessionStore` from the backend
-  factory, imported nowhere. `session_router.py` builds its own two stores instead.
+- ~~**`app.storage.session_store`**~~ — **removed 2026-09-08**, confirmed genuinely unused
+  (repo-wide grep found no importer, not even in tests). Deleted the singleton and its
+  `build_session_store()` factory from `app/storage/__init__.py`/`memory.py`; kept the
+  `SessionStore` Protocol (`app/storage/base.py`) and `InMemorySessionStore` class, both
+  still live — `session_router.py` builds its own four separate instances directly (location,
+  VERIFY, disambiguation, pending-followup), and `tests/test_storage.py`'s protocol test
+  checks the class against the Protocol independent of the deleted singleton.
 - ~~**`app.storage.conversation_log`** (`SqliteConversationLog`)~~ — **wired 2026-09-08**,
   no longer dead. See B21 below.
+- **`app/services/location_resolver/seed.py`** — **removed 2026-09-08**. Its 8-city
+  `GAZETTEER`/7-entry `SEED_PINCODES` were a last-resort offline fallback (used only when
+  every live geocoding provider failed). Removing it surfaced a real, separate finding:
+  several tests (`test_api_contracts.py`, `test_auth.py`, `test_reviewer.py`) posted
+  "Will it rain in Nagpur tomorrow?" against the real `/wio/query`/`/query` endpoints
+  without mocking location resolution at all — they were passing only because `seed.py`'s
+  Nagpur entry silently absorbed occasional live Open-Meteo/Nominatim flakiness under full
+  test-suite load (isolated single-test runs never showed it; full-suite runs intermittently
+  did). Fixed by mocking `app.services.location_resolver.resolve_location` in all 6 affected
+  tests, the same pattern `test_multi_location.py` already used. The underlying flakiness
+  itself (why full-suite load occasionally makes `open_meteo`/`nominatim` raise
+  `RuntimeError`) was not root-caused — worth investigating if it recurs outside a test
+  environment; candidate suspects are shared `httpx` client lifecycle across many tests or
+  Nominatim's shared throttle lock under rapid-fire real requests.
 
 ---
 

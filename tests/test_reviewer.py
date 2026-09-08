@@ -18,6 +18,7 @@ from app.config import settings
 from app.llm.client import LLMResult
 from app.main import app
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
+from app.schemas.location import ResolvedLocation
 from app.services.time_parser import parse_time_window
 from app.services.wio_builder import build_wio
 
@@ -330,6 +331,11 @@ def _e2e_evidence():
             for hour, value in enumerate([0.0, 3.0, 3.4, 2.0])]  # sums to 8.4
 
 
+async def _fake_resolve_nagpur(phrase):
+    return ResolvedLocation(raw=phrase, lat=21.1458, lon=79.0882, timezone="Asia/Kolkata",
+                            normalized_name="Nagpur", state="Maharashtra", country="India")
+
+
 def _e2e_post(tamper_to=None):
     """Posts the frozen-clock question end to end. tamper_to, if given, overwrites the
     forecast agent's precipitation_amount claim with that value before the reviewer runs."""
@@ -349,6 +355,7 @@ def _e2e_post(tamper_to=None):
         mp.setattr("app.main.parse_time_window",
                   lambda text, tz=None, **kw: parse_time_window(text, now=_E2E_FROZEN_NOW, tz=tz, **kw))
         mp.setattr("app.agents.orchestrator.run_forecast_agent", maybe_tampering_forecast)
+        mp.setattr("app.services.location_resolver.resolve_location", _fake_resolve_nagpur)
         return asyncio.run(_post("/wio/query", {"question": _E2E_QUESTION}))
 
 

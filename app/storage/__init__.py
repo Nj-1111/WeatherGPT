@@ -3,11 +3,10 @@ from __future__ import annotations
 
 from app.config import settings
 from app.storage.base import ContextLimitExceeded, ConversationLog, MemoryStore, SessionStore
-from app.storage.memory import build_session_store
 from app.storage.sqlite import SqliteConversationLog, SqliteMemoryStore
 
 __all__ = ["ContextLimitExceeded", "ConversationLog", "MemoryStore", "SessionStore",
-           "conversation_log", "memory_store", "session_store"]
+           "conversation_log", "memory_store"]
 
 _SUPPORTED_SESSION_BACKENDS = {"memory"}
 _SUPPORTED_DB_BACKENDS = {"sqlite"}
@@ -24,6 +23,5 @@ def _check(name: str, value: str, supported: set[str], planned: str) -> None:
 _check("SESSION_BACKEND", settings.session_backend, _SUPPORTED_SESSION_BACKENDS, "redis")
 _check("DB_BACKEND", settings.db_backend, _SUPPORTED_DB_BACKENDS, "postgres")
 
-session_store: SessionStore = build_session_store()
 memory_store: MemoryStore = SqliteMemoryStore()
 conversation_log: ConversationLog = SqliteConversationLog()

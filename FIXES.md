@@ -47,14 +47,19 @@ that detail. Last updated 2026-09-08 (input-pipeline consolidation + session-awa
 
 ## Dead code / hygiene
 
-- `app.storage.session_store` — built, imported nowhere. **Flagged, not removed 2026-09-07**:
-  `tests/test_storage.py` frames the `SessionStore` Protocol as a deliberate seam ("the seam
-  that makes Redis/Postgres a config change, not a rewrite"), which conflicts with this
-  line's own "dead code" framing. Needs a call on which framing is right before deleting a
-  Protocol-conformance-tested abstraction, not an incidental sweep.
+- ~~`app.storage.session_store`~~ — **removed 2026-09-08**: confirmed genuinely unused
+  (imported nowhere, not even in tests) and removed along with its `build_session_store()`
+  factory. Kept the `SessionStore` Protocol and `InMemorySessionStore` class — both still
+  live via `session_router.py`'s own four store instances. See `BUG.md`'s dead-code section.
 - ~~`app.storage.conversation_log`~~ — **wired 2026-09-08**, no longer dead; see `BUG.md`
   B21 and `io.md`'s `session-aware-guardrail` entry.
-- `config.py`: `rank_weights_total`, `conversation_max_turns` — zero readers
+- ~~`config.py`: `rank_weights_total`, `conversation_max_turns`~~ — **removed 2026-09-08**,
+  confirmed zero readers. `session_ttl_seconds`/`session_max_entries` also removed in the
+  same pass — they became dead the moment `build_session_store()` (their only caller) was
+  deleted above.
+- ~~`app/services/location_resolver/seed.py`~~ — **removed 2026-09-08** (8-city gazetteer +
+  7-entry PIN fallback); see `BUG.md`'s dead-code section for the test-flakiness finding it
+  surfaced.
 - ~~`.env.example`/`.env`: `HF_TOKEN`, `HF_REPO_ID` — leftover from the removed training
   repo~~ — closed 2026-09-07, removed from both files along with the stale
   `WEATHERGPT_EXPLANATION_TONE` entry (`.env.example` only; the setting itself was already

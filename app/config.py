@@ -128,9 +128,6 @@ class Settings:
     # Storage backend switch exists so promotion is a config change, not a rewrite; only "memory"/"sqlite" exist today and anything else fails loudly at import.
     session_backend: str = os.getenv("SESSION_BACKEND", "memory").strip().lower()
     db_backend: str = os.getenv("DB_BACKEND", "sqlite").strip().lower()
-    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
-    session_max_entries: int = int(os.getenv("SESSION_MAX_ENTRIES", "4096"))
-    conversation_max_turns: int = int(os.getenv("CONVERSATION_MAX_TURNS", "20"))
 
     # Time parsing
     default_timezone: str = os.getenv("WEATHERGPT_DEFAULT_TIMEZONE", "Asia/Kolkata")
@@ -179,7 +176,7 @@ class Settings:
     query_understanding_confidence_threshold: float = float(
         os.getenv("WEATHERGPT_QUERY_UNDERSTANDING_CONFIDENCE_THRESHOLD", "0.7"))
 
-    # Short-circuits geocoding+time parsing for a follow-up naming no new location; its own short TTL (not session_ttl_seconds) because a stale-location silent answer is worse than a cache miss.
+    # Short-circuits geocoding+time parsing for a follow-up naming no new location; its own short, fixed TTL because a stale-location silent answer is worse than a cache miss.
     follow_up_context_enabled: bool = _flag("WEATHERGPT_FOLLOW_UP_CONTEXT_ENABLED", "true")
     follow_up_context_ttl_seconds: int = int(os.getenv("WEATHERGPT_FOLLOW_UP_CONTEXT_TTL_SECONDS", "300"))
     follow_up_context_max_entries: int = int(os.getenv("WEATHERGPT_FOLLOW_UP_CONTEXT_MAX_ENTRIES", "4096"))
@@ -200,11 +197,6 @@ class Settings:
     cors_origins: tuple[str, ...] = tuple(
         item.strip() for item in os.getenv("WEATHERGPT_CORS_ORIGINS", "").split(",") if item.strip()
     )
-
-    @property
-    def rank_weights_total(self) -> float:
-        return (self.rank_weight_authority + self.rank_weight_freshness + self.rank_weight_spatial
-                + self.rank_weight_quality + self.rank_weight_temporal)
 
 
 settings = Settings()
