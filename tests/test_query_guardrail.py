@@ -15,7 +15,7 @@ import pytest
 from app.config import LLMEndpoint, settings
 from app.llm.client import LLMResult
 from app.schemas.query import ClarifyReason, GuardrailAction
-from app.services import query_guardrail
+from app.services.input_pipeline import query_guardrail
 
 
 def _stub_llm(monkeypatch, payload: dict | None, *, available: bool = True):
@@ -410,3 +410,94 @@ def test_resolve_confirmed_location_never_guesses_apparent_context():
 ])
 def test_parse_followup_answer(answer, domain, expected):
     assert query_guardrail._parse_followup_answer(answer, domain) == expected
+
+
+# --- session-aware guardrail: history is plumbed into the prompt and the cache key ---
+
+def test_history_is_rendered_into_the_user_message(monkeypatch):
+    captured = {}
+
+    async def fake_small_llm(messages, **kwargs):
+        captured["messages"] = messages
+        return LLMResult(tier="small", available=True, text=json.dumps({
+            "action": "accept_weather_full", "locations": ["Newtown"], "time_phrases": [],
+            "confidence": 0.9}))
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+
+    history = [{"role": "user", "text": "will it rain in Newtown"},
+              {"role": "assistant", "text": "Newtown", "action": "accept_weather_full"}]
+    asyncio.run(query_guardrail.run_guardrail("can I go play in the evening", history=history))
+
+    user_content = captured["messages"][1]["content"]
+    assert "Recent conversation:" in user_content
+    assert "will it rain in Newtown" in user_content
+    assert "Current message: can I go play in the evening" in user_content
+
+
+def test_no_history_omits_the_recent_conversation_block(monkeypatch):
+    captured = {}
+
+    async def fake_small_llm(messages, **kwargs):
+        captured["messages"] = messages
+        return LLMResult(tier="small", available=True, text=json.dumps({
+            "action": "accept_weather_full", "locations": ["Pune"], "time_phrases": [], "confidence": 0.9}))
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+
+    asyncio.run(query_guardrail.run_guardrail("weather in Pune"))
+    assert captured["messages"][1]["content"] == "weather in Pune"
+
+
+def test_different_histories_for_the_same_question_do_not_share_a_cache_entry(monkeypatch):
+    calls = 0
+
+    async def fake_small_llm(messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        return LLMResult(tier="small", available=True, text=json.dumps({
+            "action": "accept_weather_full", "locations": ["Pune"], "time_phrases": [], "confidence": 0.9}))
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+
+    asyncio.run(query_guardrail.run_guardrail("and tomorrow?", history=[{"role": "user", "text": "weather in Pune"}]))
+    asyncio.run(query_guardrail.run_guardrail("and tomorrow?", history=[{"role": "user", "text": "weather in Delhi"}]))
+    assert calls == 2, "different conversations must not collide on question text alone"
+
+
+def test_same_question_and_history_hits_the_cache(monkeypatch):
+    calls = 0
+
+    async def fake_small_llm(messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        return LLMResult(tier="small", available=True, text=json.dumps({
+            "action": "accept_weather_full", "locations": ["Pune"], "time_phrases": [], "confidence": 0.9}))
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+
+    history = [{"role": "user", "text": "weather in Pune"}]
+    asyncio.run(query_guardrail.run_guardrail("and tomorrow?", history=history))
+    asyncio.run(query_guardrail.run_guardrail("and tomorrow?", history=history))
+    assert calls == 1
+
+
+# --- session-aware guardrail: multilingual fixed templates ---
+
+def test_render_message_translates_reject_off_topic_for_detected_hindi():
+    from app.schemas.query import GuardrailDecision
+    decision = GuardrailDecision(original_text="x", action=GuardrailAction.REJECT_OFF_TOPIC, detected_lang="hi")
+    message = query_guardrail.render_guardrail_message(decision)
+    assert message != query_guardrail.render_guardrail_message(
+        GuardrailDecision(original_text="x", action=GuardrailAction.REJECT_OFF_TOPIC, detected_lang="en"))
+    assert "मौसम" in message
+
+
+def test_render_message_translates_clarify_for_detected_hindi():
+    from app.schemas.query import GuardrailDecision
+    decision = GuardrailDecision(original_text="x", action=GuardrailAction.CLARIFY,
+                                 clarify_reason=ClarifyReason.NO_LOCATION, detected_lang="hi")
+    assert query_guardrail.render_guardrail_message(decision) == "यह किस जगह के बारे में है?"
+
+
+def test_render_message_falls_back_to_english_for_an_unlisted_language():
+    from app.schemas.query import GuardrailDecision
+    decision = GuardrailDecision(original_text="x", action=GuardrailAction.REJECT_OFF_TOPIC, detected_lang="fr")
+    assert query_guardrail.render_guardrail_message(decision) == query_guardrail.render_guardrail_message(
+        GuardrailDecision(original_text="x", action=GuardrailAction.REJECT_OFF_TOPIC, detected_lang="en"))

@@ -170,6 +170,9 @@ class Settings:
     # The guardrail's LLM call is deterministic (fixed decision tree, temperature 0), so a repeated question can't legitimately reach a different action — safe to cache.
     guardrail_cache_ttl_seconds: int = int(os.getenv("WEATHERGPT_GUARDRAIL_CACHE_TTL_SECONDS", "3600"))
     guardrail_cache_max_entries: int = int(os.getenv("WEATHERGPT_GUARDRAIL_CACHE_MAX_ENTRIES", "2048"))
+    # How many prior turns the guardrail LLM call sees, so a contextless follow-up ("can I
+    # go play in the evening") can be recognized as a continuation instead of hard-rejected.
+    guardrail_history_turns: int = int(os.getenv("WEATHERGPT_GUARDRAIL_HISTORY_TURNS", "3"))
 
     # LLM-first location/time/intent/topic extraction ahead of geocoding, mandatory by product decision; below the confidence floor a read is treated as off-topic.
     query_understanding_enabled: bool = _flag("WEATHERGPT_QUERY_UNDERSTANDING_ENABLED", "true")

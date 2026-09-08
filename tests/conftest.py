@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.query_guardrail import _decision_cache
+from app.services.input_pipeline.query_guardrail import _decision_cache
 
 
 @pytest.fixture(autouse=True)

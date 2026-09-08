@@ -11,7 +11,12 @@ Output ONLY a single valid JSON object, no markdown fences, no commentary:
 "verify_candidate": string|null, "clarify_reason": "garbled_input"|"no_location"|null,
 "unsupported_topic": string|null, "confidence": number, "detected_lang": string,
 "apparent_context": string|null, "capabilities": [string, ...],
-"confidence_per_capability": {string: "low"|"medium"|"high", ...}}
+"confidence_per_capability": {string: "low"|"medium"|"high", ...},
+"reasoning": string}
+
+"reasoning" is a short (under 25 words) internal note on which rule fired and why —
+logged for debugging, never shown to the user. State explicitly when rule 0 (conversation
+continuation) applied.
 
 "capabilities" must only ever contain values from this exact list: temperature,
 precipitation, wind, marine, extreme_events, humidity, pressure, cloud_cover, visibility,

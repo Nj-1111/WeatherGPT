@@ -6,7 +6,8 @@ import time
 
 from app.config import settings
 from app.schemas.location import ResolvedLocation
-from app.services.location_resolver import detect, normalize, ranking, seed
+from app.services.input_pipeline import normalize
+from app.services.location_resolver import detect, ranking, seed
 from app.services.location_resolver.cache import location_cache
 from app.services.location_resolver.providers.base import LocationCandidate
 from app.services.location_resolver.providers.geoapify import GeoapifyGeocoder

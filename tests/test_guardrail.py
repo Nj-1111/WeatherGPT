@@ -2,7 +2,7 @@
 import pytest
 
 from app.errors import WeatherGPTError
-from app.services.guardrail import check_question
+from app.services.input_pipeline.safety import check_question
 from app.services.rate_limit import RateLimiter
 
 

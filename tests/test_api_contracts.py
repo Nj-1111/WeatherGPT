@@ -98,10 +98,10 @@ def test_two_turn_followup_flow_asks_and_uses_answer(monkeypatch):
     import app.main as main_module
     real_run_guardrail = main_module.run_guardrail
 
-    async def counting_run_guardrail(text):
+    async def counting_run_guardrail(text, history=None):
         nonlocal guardrail_calls
         guardrail_calls += 1
-        return await real_run_guardrail(text)
+        return await real_run_guardrail(text, history=history)
     monkeypatch.setattr("app.main.run_guardrail", counting_run_guardrail)
 
     body_1 = {"question": "should I go fishing tomorrow", "session_id": "s-marine-flow",

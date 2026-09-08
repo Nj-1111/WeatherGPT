@@ -39,18 +39,19 @@ from app.services import disambiguation, location_resolver, session_router
 from app.services.auth import key_scope, verify_api_key
 from app.services.cache import weather_cache
 from app.services.evidence_store import evidence_store
-from app.services.guardrail import check_question_fast
+from app.services.input_pipeline.conversation_history import recent_turns, record_turn
+from app.services.input_pipeline.query_guardrail import (
+    _parse_followup_answer,
+    render_guardrail_message,
+    resolve_confirmed_location,
+    run_guardrail,
+)
+from app.services.input_pipeline.safety import check_question_fast
 from app.services.location_resolver import (
     LocationAmbiguousError,
     LocationNotFoundError,
     extract_location,
     resolve_location,
-)
-from app.services.query_guardrail import (
-    _parse_followup_answer,
-    render_guardrail_message,
-    resolve_confirmed_location,
-    run_guardrail,
 )
 from app.services.rate_limit import RateLimiter
 from app.services.retrieval import retrieve
@@ -294,11 +295,15 @@ _AFFIRMATION_WORDS = ("yes", "yeah", "yep", "yup", "correct", "right", "haan", "
 
 
 async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> tuple[GuardrailDecision | None, dict[str, Any], str | None]:
-    """Runs before location/time/retrieval; None means disabled (falls back to regex-only, no-topic-gate behavior). Second return value is a profile update (a closed-question answer from a resumed follow-up) kept separate from GuardrailDecision, which stays intentionally minimal. Third is the RADE domain a resumed follow-up belongs to — the resumed turn's own text (e.g. "small boat, four of us") often won't keyword-match any domain on its own, so it has to be threaded through rather than re-derived. Priority order for a session's one live conversational follow-up: pending disambiguation > pending VERIFY > pending follow-up > a fresh guardrail run."""
+    """Runs before location/time/retrieval; None means disabled (falls back to regex-only, no-topic-gate behavior). Second return value is a profile update (a closed-question answer from a resumed follow-up) kept separate from GuardrailDecision, which stays intentionally minimal. Third is the RADE domain a resumed follow-up belongs to — the resumed turn's own text (e.g. "small boat, four of us") often won't keyword-match any domain on its own, so it has to be threaded through rather than re-derived. Priority order for a session's one live conversational follow-up: pending disambiguation > pending VERIFY > pending follow-up > a fresh guardrail run.
+
+    Every branch records the turn to conversation_history so a later, unrelated-looking
+    follow-up ("can I go play in the evening") can be read by a future run_guardrail call as
+    a continuation of this one, instead of being judged on its own text alone."""
     if not settings.query_understanding_enabled:
         return None, {}, None
-    if req.session_id and settings.follow_up_context_enabled:
-        scoped = _scoped_id(request, req.session_id)
+    scoped = _scoped_id(request, req.session_id) if req.session_id else None
+    if scoped and settings.follow_up_context_enabled:
         pending_disambiguation = await session_router.consume_pending_disambiguation(scoped)
         if pending_disambiguation is not None:
             original_text, candidates = pending_disambiguation
@@ -307,20 +312,35 @@ async def _resolve_guardrail_decision(req: QueryRequestV1, request: Request) -> 
                 location_str = (matched["name"]
                                 + (f", {matched['state']}" if matched.get("state") else "")
                                 + (f", {matched['country']}" if matched.get("country") else ""))
-                return resolve_confirmed_location(original_text, location_str), {}, None
+                decision = resolve_confirmed_location(original_text, location_str)
+                await _record_guardrail_turn(scoped, req.question, decision)
+                return decision, {}, None
             # No confident match: drop it and treat this message as a fresh question.
         pending = await session_router.consume_pending_verification(scoped)
         if pending is not None and has_word(req.question.casefold(), _AFFIRMATION_WORDS):
             original_text, candidate = pending
-            return resolve_confirmed_location(original_text, candidate), {}, None
+            decision = resolve_confirmed_location(original_text, candidate)
+            await _record_guardrail_turn(scoped, req.question, decision)
+            return decision, {}, None
         pending_followup = await session_router.consume_pending_followup(scoped)
         if pending_followup is not None:
             pending_text, domain = pending_followup
             profile_update = _parse_followup_answer(req.question, domain)
             decision = GuardrailDecision(original_text=pending_text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
                                          extraction_source="confirmed")
+            await _record_guardrail_turn(scoped, req.question, decision)
             return decision, profile_update, domain
-    return await run_guardrail(req.question), {}, None
+    history = await recent_turns(scoped, settings.guardrail_history_turns) if scoped else []
+    decision = await run_guardrail(req.question, history=history)
+    if scoped:
+        await _record_guardrail_turn(scoped, req.question, decision)
+    return decision, {}, None
+
+
+async def _record_guardrail_turn(scoped_session_id: str, question: str, decision: GuardrailDecision) -> None:
+    await record_turn(scoped_session_id, "user", text=question)
+    await record_turn(scoped_session_id, "assistant", text=decision.location or "",
+                      action=decision.action.value)
 
 
 async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | WeatherRequestResult:

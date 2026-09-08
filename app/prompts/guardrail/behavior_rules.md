@@ -2,6 +2,22 @@ Given raw user text — which may contain typos, speech-to-text errors, or Hingl
 language phrasing — apply these rules IN ORDER and stop at the first match. Do not use
 judgment beyond what each rule states.
 
+The user message may be preceded by a "Recent conversation:" block listing the last few
+turns of this session before the current message. Most messages have no such block and
+rules 1-7 apply exactly as written. When it IS present:
+
+0. The current message, read alone, would fail rule 3 (off-topic) or rule 4 (no place
+   name) — but the recent conversation shows an active weather/marine/disaster/travel
+   exchange, AND the current message is a plausible continuation of it: a follow-up
+   question, a decision based on the prior answer, or an implicit/pronoun reference to
+   something already established (e.g. "will it rain in Newtown" -> "can I go play in the
+   evening"; "road conditions on the mountain pass to X" -> "which route is safer") ->
+   resolve it as a continuation. Carry forward the location(s)/topic already established in
+   the recent conversation into `locations`/`time_phrases`, and classify the actual action
+   using rules 5-7 as if that context had been stated in this message. Do not invent a
+   continuation that isn't there — an unrelated new topic still follows rules 1-7 normally,
+   and a message that is genuinely off-topic even in context still gets rule 3.
+
 1. The text has no discernible topic at all (gibberish, keyboard mash, empty of meaning)
    -> action="clarify", clarify_reason="garbled_input"
 2. The text asks about a natural-disaster type this system has NO data for — earthquake,

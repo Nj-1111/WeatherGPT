@@ -10,7 +10,9 @@ from app.agents.base import AgentResult, Claim
 from app.agents.verification import check_prose_grounding, verify_claim
 from app.config import settings
 from app.llm.client import DETERMINISTIC, Tier, big_llm, is_configured, small_llm
+from app.prompts.loader import load_prompt
 from app.schemas.ceo import CanonicalEvidenceObject
+from app.services.input_pipeline.context_retriever import context_retriever
 
 logger = logging.getLogger(__name__)
 
@@ -120,26 +122,10 @@ async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[C
     status="success" if not errors else "partial"
     return AgentResult(agent_name="reviewer", claims=[], confidence=0.9, errors=errors, warnings=warnings, status=status, execution_time_ms=int((time.time()-start)*1000), model=DETERMINISTIC)
 
-_EXPLANATION_SYSTEM = (
-    "You are a weather intelligence assistant explaining an assessment that has already "
-    "been computed from retrieved evidence. From the fact sheet — including any apparent "
-    "context — infer who is asking and what they are deciding, without naming a label or "
-    "job title for them; use that inference only to choose which figures matter most and "
-    "how to phrase the answer, e.g. the same rain figure matters to a fisherman and a "
-    "farmer for different reasons. Lead with the answer to their decision, not a weather "
-    "report: state the recommendation or the single most relevant figure first, then "
-    "supporting detail. Use hedged language (generally, common practice, consider) for "
-    "anything not backed by a fetched number. If, and only if, one more fact would change "
-    "the recommendation, end with exactly one clarifying question in your own words; never "
-    "ask for anything that would not change the advice. Use ONLY the figures in the fact "
-    "sheet: never introduce a number, quantity, date or place that is not there, never "
-    "estimate, and never contradict the assessment. If a figure is absent, say it is not "
-    "available. Answer in {lang}, in at most {max_words} words, as plain prose with no "
-    "headings, no lists and no markdown."
-)
+_EXPLANATION_SYSTEM = load_prompt("explanation")
 
 
-def _fact_sheet(wio, decision) -> str:
+def _fact_sheet(wio, decision, context_docs: list[str] | None = None) -> str:
     # The raw question is deliberately excluded — it's the one caller-controlled string reaching the model, and check_prose_grounding only constrains numbers, not instructions; query.intent gives the same orientation from a closed, pipeline-derived set.
     lines=[f"Intent: {wio.query.intent or 'general weather'}",
            f"Location: {wio.query.resolved_location.get('normalized_name') or wio.query.resolved_location.get('raw', 'unknown')}",
@@ -179,6 +165,8 @@ def _fact_sheet(wio, decision) -> str:
     if missing_fields:
         lines.append("Unresolved factor that could change this: "
                      + " and ".join(field.replace("_", " ") for field in missing_fields) + ".")
+    if context_docs:
+        lines.append("Reference material:\n" + "\n".join(context_docs))
     return "\n".join(lines)
 
 
@@ -209,9 +197,12 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     panel_ids=_panel_evidence_ids(wio)
     if not panel_ids:
         return _result([], "success")
+    # Query by intent, not the raw question — the fact sheet excludes the raw question for
+    # the same reason (see _fact_sheet's comment); returns [] until a real retriever is wired.
+    context_docs=await context_retriever.retrieve(wio.query.intent or "", k=3)
     messages=[{"role": "system", "content": _EXPLANATION_SYSTEM.format(
                   lang=lang, max_words=settings.llm_max_words)},
-              {"role": "user", "content": _fact_sheet(wio, decision)}]
+              {"role": "user", "content": _fact_sheet(wio, decision, context_docs)}]
     tier: Tier = "big" if _requires_big_llm(wio, decision) and is_configured("big") else "small"
     tier_llm = big_llm if tier == "big" else small_llm
     result=await tier_llm(messages, max_tokens=settings.llm_max_words * 4)

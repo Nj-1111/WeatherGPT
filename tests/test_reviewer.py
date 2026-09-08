@@ -186,6 +186,20 @@ def test_explanation_system_prompt_is_domain_invariant(monkeypatch):
     assert captured["system"] == first_prompt
 
 
+def test_context_retriever_stub_returns_no_docs_and_fact_sheet_is_unaffected():
+    """RAG seam: retrieve() is a no-op today, so the fact sheet must render identically
+    whether or not the call site exists — no 'Reference material' section appears."""
+    from app.services.input_pipeline.context_retriever import ContextRetriever
+
+    docs = asyncio.run(ContextRetriever().retrieve("some intent", k=3))
+    assert docs == []
+
+    from app.agents.orchestrator import _fact_sheet
+    wio = _wio(_evidence())
+    assert "Reference material" not in _fact_sheet(wio, None, docs)
+    assert "Reference material" in _fact_sheet(wio, None, ["a retrieved doc"])
+
+
 def test_explanation_prompt_carries_the_detected_language(monkeypatch):
     captured = {}
 

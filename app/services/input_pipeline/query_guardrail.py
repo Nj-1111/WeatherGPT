@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any
 
 from app.config import settings
 from app.llm.client import small_llm
@@ -12,8 +13,8 @@ from app.prompts.loader import load_prompt
 from app.rade.v2 import CLARIFYING_FIELDS
 from app.schemas.query import ClarifyReason, GuardrailAction, GuardrailDecision
 from app.services.cache import TTLCache
-from app.services.guardrail import TOPIC_WORDS, check_question
-from app.services.location_resolver.normalize import extract_place_phrase
+from app.services.input_pipeline.normalize import extract_place_phrase
+from app.services.input_pipeline.safety import TOPIC_WORDS, check_question
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,10 @@ def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
     if not isinstance(capabilities_version, str) or not capabilities_version:
         capabilities_version = "v1"
 
+    reasoning = data.get("reasoning")
+    if reasoning:
+        logger.info("query_guardrail.reasoning", extra={"reasoning": str(reasoning)[:200]})
+
     try:
         return GuardrailDecision(
             original_text=raw_text,
@@ -192,13 +197,27 @@ _LLM_KWARGS = {
 }
 
 
-async def run_guardrail(raw_text: str) -> GuardrailDecision:
+def _format_history(history: list[dict[str, Any]] | None) -> str:
+    """Renders the last few turns as a user-message preamble (never the system prompt, so the decision-tree rules stay history-independent and the LLM call structure unchanged). Empty for the common stateless case."""
+    if not history:
+        return ""
+    lines = [f"{turn.get('role', 'user')}: {turn.get('text', '')}" for turn in history if turn.get("text")]
+    return "Recent conversation:\n" + "\n".join(lines) + "\n\n" if lines else ""
+
+
+async def run_guardrail(raw_text: str, history: list[dict[str, Any]] | None = None) -> GuardrailDecision:
     text = (raw_text or "").strip()
-    key = text.casefold()
+    history_block = _format_history(history)
+    # Keyed on history too: the same question text can mean different things depending on
+    # conversation context, so a stateless cache-by-text-alone would serve a stale/wrong
+    # decision to a different conversation. Turns with no history hash the same as before,
+    # so the common case (repeat, stateless queries) keeps its existing cache benefit.
+    key = f"{text.casefold()}::{history_block}"
     cached = await _decision_cache.get(key)
     if cached is not None:
         return cached.value.model_copy(update={"original_text": text})
-    messages = [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": text}]
+    user_content = f"{history_block}Current message: {text}" if history_block else text
+    messages = [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": user_content}]
     result = await small_llm(messages, **_LLM_KWARGS)
     if not result.available or not result.text:
         logger.info("query_guardrail.llm_unavailable", extra={"error": result.error})
@@ -268,15 +287,31 @@ _CLARIFY_MESSAGES: dict[ClarifyReason, str] = {
     ClarifyReason.NO_LOCATION: "Which location is this about?",
 }
 
+# Static translations only, no LLM call — these 4 messages never change, so a table is
+# cheaper and faster than a per-request translation call. Extend per language as needed;
+# an unlisted detected_lang falls back to English rather than failing.
+_REJECT_OFF_TOPIC_HI = ("मैं केवल मौसम, समुद्री/मछली पकड़ने की स्थिति, पहाड़ी मौसम, "
+                        "मौसम-जनित आपदा जोखिम, यात्रा योजना, या स्थान से जुड़े सवालों के जवाब दे सकता हूँ।")
+_CLARIFY_MESSAGES_HI: dict[ClarifyReason, str] = {
+    ClarifyReason.GARBLED_INPUT: "मुझे समझ नहीं आया — क्या आप फिर से बता सकते हैं?",
+    ClarifyReason.NO_LOCATION: "यह किस जगह के बारे में है?",
+}
+_TRANSLATIONS: dict[str, dict[str, Any]] = {
+    "hi": {"reject_off_topic": _REJECT_OFF_TOPIC_HI, "clarify": _CLARIFY_MESSAGES_HI},
+}
+
 
 def render_guardrail_message(decision: GuardrailDecision) -> str | None:
-    """Fixed, deterministic wording for every non-ACCEPT action; returns None for ACCEPT_LOCATION_ONLY/ACCEPT_WEATHER_FULL, which continue into the pipeline instead."""
+    """Fixed, deterministic wording for every non-ACCEPT action; returns None for ACCEPT_LOCATION_ONLY/ACCEPT_WEATHER_FULL, which continue into the pipeline instead. Templates are translated from a static table when detected_lang has one (see _TRANSLATIONS) — never via an LLM call, since the wording never changes."""
+    lang = _TRANSLATIONS.get(decision.detected_lang, {})
     if decision.action == GuardrailAction.REJECT_OFF_TOPIC:
-        return ("I can only answer questions about weather, marine/fishing conditions, "
-                "mountain weather, weather-driven disaster risk, travel planning, or location.")
+        return lang.get("reject_off_topic",
+                        "I can only answer questions about weather, marine/fishing conditions, "
+                        "mountain weather, weather-driven disaster risk, travel planning, or location.")
     if decision.action == GuardrailAction.CLARIFY:
-        return _CLARIFY_MESSAGES.get(decision.clarify_reason or ClarifyReason.GARBLED_INPUT,
-                                     _CLARIFY_MESSAGES[ClarifyReason.GARBLED_INPUT])
+        messages = lang.get("clarify", _CLARIFY_MESSAGES)
+        return messages.get(decision.clarify_reason or ClarifyReason.GARBLED_INPUT,
+                            _CLARIFY_MESSAGES[ClarifyReason.GARBLED_INPUT])
     if decision.action == GuardrailAction.VERIFY:
         return f"Did you mean {decision.verify_candidate}? Reply to confirm or rephrase."
     if decision.action == GuardrailAction.UNSUPPORTED_TOPIC:

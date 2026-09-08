@@ -25,6 +25,8 @@ item belongs in `CLAUDE.md`'s session records; this file tracks what's live and 
 | `new-source-sunrise-sunset` | Open-Meteo's `daily` parameter set | — | not started, **[not live-verified]** |
 | `new-source-tides-moon-astro` | Moonrise/moonset, tide timetables, equinox/solstice, eclipse/panchang-level data | — | deferred, unscoped — no source identified yet |
 | `personalization` | Profile-aware phrasing/detail level beyond the existing `profile` dict passthrough | `response-shape` | deferred, unscoped |
+| `session-aware-guardrail` | Guardrail LLM call sees recent conversation turns, so a contextless follow-up ("can I go play in the evening" after "will it rain in Newtown") is read as a continuation instead of hard-rejected | — | **done (2026-09-08)** — see note |
+| `output-guardrail` | Lenient post-hoc `check_output(response_text) -> OK \| FLAGGED` on the explanation LLM's response (toxicity keywords, leaked-instruction markers, obvious off-topic drift), wired in `main.py` right after `run_explanation_agent`; on `FLAGGED`, degrade through the same `status="partial"` fallback path an explanation failure already uses | — | not started |
 
 **Build order:** `poi-geocoding` → new-source rows (`new-source-aqi`/`new-source-sunrise-sunset`,
 each needing one live smoke test before writing the decoder — verify against the real API
@@ -42,11 +44,14 @@ when the LLM omits it or the deterministic fallback runs. `QueryRequestV1.langua
 `str | None` so a caller override is distinguishable from "not set." `app/main.py` resolves
 one `effective_lang` (override, else detection, else `"en"`) and threads it into
 `wio.query.lang`, the single value `run_all_agents`/`run_explanation_agent` read.
-**What's NOT covered**: only the LLM explanation agent's own `{lang}` prompt slot is
-translated. The four fixed guardrail messages, `wio_builder.py`'s summary sentences,
-`rade/v2.py`'s rationale strings, and `main.py:_synthesize`'s scaffolding all stay
-English-only by design (they're deliberately never LLM-composed) — a Bengali question that
-hits `REJECT_OFF_TOPIC`/`CLARIFY` still gets an English message. Closing that needs a
+**What's NOT covered**: the LLM explanation agent's own `{lang}` prompt slot, and (as of
+`session-aware-guardrail`, 2026-09-08) the guardrail's `reject_off_topic`/`clarify`
+templates for Hindi only (`query_guardrail.py`'s `_TRANSLATIONS` static table — no LLM
+call, since the wording never changes). Every other detected language still falls back to
+English for those two templates, and `verify`/`unsupported_topic` messages, plus
+`wio_builder.py`'s summary sentences, `rade/v2.py`'s rationale strings, and
+`main.py:_synthesize`'s scaffolding, all stay English-only by design (deliberately never
+LLM-composed). Closing the rest needs either more entries in `_TRANSLATIONS` or a
 translated-template design per surface, not an extension of this mechanism.
 
 **`warning-agent-geofilter`** — one filter, `wio_builder.filter_covered_warnings(ceos,
@@ -117,6 +122,37 @@ not correctness-blocking); the pending-followup clarifying-question mechanism on
 for a single resolved pair (no defined rule yet for which of several borderline pairs would
 get asked). Capped at `settings.max_location_time_pairs` (default 6) by silent truncation,
 not a rejection — closes `BUG.md`'s B8.
+
+**`session-aware-guardrail`** — closes the `BUG.md` B6/B7 class root cause: the guardrail
+had no conversation memory at all, so a contextless follow-up ("can I go play in the
+evening" after "will it rain in Newtown") was judged on its own text and hard-rejected.
+`app/storage/sqlite.py`'s `SqliteConversationLog` (protocol-conformant, tested, but never
+called by anything) is now wired live via `app/services/input_pipeline/
+conversation_history.py`'s `record_turn`/`recent_turns` (both `asyncio.to_thread`-wrapped,
+since the SQLite calls are synchronous — `FIXES.md` §2.8 stays open for the store in
+general, but this hot path doesn't block the event loop). `app/main.py`'s
+`_resolve_guardrail_decision` fetches the last `settings.guardrail_history_turns` (default
+3) turns before calling `run_guardrail`, and records every branch's outcome (including the
+pending-disambiguation/verify/followup resumption paths) so later turns have full context.
+`run_guardrail(question, history=...)` renders history into the **user** message, never the
+system prompt, so the decision-tree rules stay stable and cacheable independent of history;
+`app/prompts/guardrail/behavior_rules.md` gained rule 0 (continuation) plus a `reasoning`
+diagnostic output field (logged only, never schema-persisted or user-visible). The decision
+cache key changed from question-text-alone to `(text, history)`, since the same text can now
+mean different things depending on context — a stateless repeat query keeps its old cache
+benefit (empty history hashes the same as before), a context-dependent follow-up does not
+collide across different conversations. Net latency effect is close to zero: no second
+LLM/network call, just more context in the existing one.
+
+Same change also extended `conversational-system-prompt` work: `_EXPLANATION_SYSTEM`
+(`app/agents/orchestrator.py`) moved from an inline string to `app/prompts/explanation/`
+(matching every other LLM call site's `{system_role,behavior_rules,output_format}.md`
+convention), gained an official-source-escalation sentence, and a `ContextRetriever` stub
+(`app/services/input_pipeline/context_retriever.py`, returns `[]` today) is now wired into
+`run_explanation_agent` → `_fact_sheet`'s new `context_docs` param, so RAG is a fill-in-the-
+blank later, not a re-architecture.
+
+**Deferred, not built this round**: `output-guardrail` (see roadmap row above).
 
 ---
 

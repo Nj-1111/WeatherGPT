@@ -207,7 +207,7 @@ def test_d2_refusal_does_not_consume_more_budget():
 ])
 def test_a4_dates_and_times_are_stripped_from_the_place_name(question, place):
     """These reached the geocoder as 'Rajkot on 2026-08-01' and 404'd after 1.26s."""
-    from app.services.location_resolver.normalize import extract_place_phrase
+    from app.services.input_pipeline.normalize import extract_place_phrase
     assert extract_place_phrase(question) == place
 
 
@@ -220,7 +220,7 @@ def test_a4_dates_and_times_are_stripped_from_the_place_name(question, place):
     ("weather in New Delhi", "New Delhi"),
 ])
 def test_a4_place_names_that_already_worked_are_untouched(question, expected):
-    from app.services.location_resolver.normalize import extract_place_phrase
+    from app.services.input_pipeline.normalize import extract_place_phrase
     assert extract_place_phrase(question) == expected
 
 
@@ -232,7 +232,7 @@ def test_a4_place_names_that_already_worked_are_untouched(question, expected):
 def test_extract_place_phrase_recognizes_to_as_a_lead_preposition(question, place):
     """Disaster/route phrasing ("coming to X", "route to Y") was silently unextractable —
     the guardrail broadening accepted these topics but location resolution then 422'd."""
-    from app.services.location_resolver.normalize import extract_place_phrase
+    from app.services.input_pipeline.normalize import extract_place_phrase
     assert extract_place_phrase(question) == place
 
 
@@ -245,7 +245,7 @@ def test_extract_place_phrase_strips_right_now_as_one_phrase(question, place):
     """"right" precedes the trailing-time match word "now", so it wasn't stripped —
     "Nagpur right now" resolved to place name "Nagpur right", which then geocoded wrong
     or 404'd depending on luck."""
-    from app.services.location_resolver.normalize import extract_place_phrase
+    from app.services.input_pipeline.normalize import extract_place_phrase
     assert extract_place_phrase(question) == place
 
 
@@ -286,7 +286,7 @@ def test_a4_a_dated_question_resolves_end_to_end_without_a_geocoder_failure(monk
 def test_a4_the_month_pattern_has_one_owner():
     """normalize.py discards dates, time_parser.py parses them — one definition of what a
     month looks like, or the two drift and this bug returns in a new shape."""
-    from app.services.location_resolver import normalize
+    from app.services.input_pipeline import normalize
     from app.services.time_parser import MONTH_PATTERN
     assert normalize.MONTH_PATTERN is MONTH_PATTERN
 

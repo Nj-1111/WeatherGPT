@@ -172,7 +172,7 @@ def test_historical_alias_is_normalized(stub_chain):
 ])
 def test_expanded_india_aliases_normalize_to_canonical_name(typo, canonical):
     """chenai -> Chennai is the exact live-verified typo that used to resolve to France."""
-    from app.services.location_resolver.normalize import normalize_query
+    from app.services.input_pipeline.normalize import normalize_query
     assert normalize_query(typo) == canonical
 
 
@@ -183,7 +183,7 @@ def test_expanded_india_aliases_normalize_to_canonical_name(typo, canonical):
 def test_extract_place_phrase_rejects_self_referential_phrases(question):
     """"near me"/"here" are not place names — a free-text geocoder used to fuzzy-match
     "near me" to an unrelated foreign village (verified live: Cameroon)."""
-    from app.services.location_resolver.normalize import extract_place_phrase
+    from app.services.input_pipeline.normalize import extract_place_phrase
     assert extract_place_phrase(question) is None
 
 

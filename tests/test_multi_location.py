@@ -61,7 +61,7 @@ def test_multi_location_query_populates_comparisons(monkeypatch):
         return _fixture_evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
     monkeypatch.setattr("app.main.retrieve", fake_retrieve)
 
-    async def fake_run_guardrail(text):
+    async def fake_run_guardrail(text, history=None):
         return GuardrailDecision(original_text=text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
                                  locations=["Kochi", "Chennai"], time_phrases=["tomorrow"],
                                  pairing_mode="locations_x_shared_time", confidence=0.9)
@@ -85,7 +85,7 @@ def test_single_location_query_leaves_comparisons_none(monkeypatch):
         return _fixture_evidence(), {"sources": {"fixture": {"status": "ok"}}, "partial": False}
     monkeypatch.setattr("app.main.retrieve", fake_retrieve)
 
-    async def fake_run_guardrail(text):
+    async def fake_run_guardrail(text, history=None):
         return GuardrailDecision(original_text=text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
                                  locations=["Kochi"], time_phrases=["tomorrow"], confidence=0.9)
     monkeypatch.setattr("app.main.run_guardrail", fake_run_guardrail)
