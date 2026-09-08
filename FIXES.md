@@ -93,8 +93,8 @@ shipped without a live before/after re-measurement of the original nationwide-CA
 
 ## Suggested order
 
-1. B20's `.env`-in-Docker-image half — secrets exposure, cheap fix, only item here with blast radius outside this repo
-2. B2 — deterministic, unit-testable
-3. §2.8 / A9 — throughput + metrics correctness, cheap together
-4. A8 — data-accuracy bug (wrong probability cited)
-5. B3 / B6 / B7's general class — prompt-behavior cluster, needs a live harness
+1. B2 — deterministic, unit-testable
+2. §2.8 / A9 — throughput + metrics correctness, cheap together
+3. A8 — data-accuracy bug (wrong probability cited)
+4. B3 / B6 / B7's general class — prompt-behavior cluster, needs a live harness
+5. B20's `pytest`-in-runtime-image half — requirements-dev.txt split, cheap
