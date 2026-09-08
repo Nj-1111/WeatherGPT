@@ -332,7 +332,7 @@ than the Gemini fallback (2-6s) that had been silently absorbing every call unti
 ```bash
 cd ~/weathergpt && source .venv/bin/activate
 pip install -r requirements-api.txt
-pytest -q                                    # expect 393+ passed, both ruff/mypy clean
+pytest -q                                    # expect 397+ passed, both ruff/mypy clean
 ruff check app tests && mypy app             # both clean
 set -a && source .env && set +a && uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
@@ -573,6 +573,78 @@ cascading enough fallback traffic onto Gemini to exhaust its quota too — sever
 degraded to the deterministic fallback (no continuation logic) until the burst subsided.
 Recorded as `BUG.md` B21 and an `io.md` note; not yet isolated to a single fix.
 
+**Same-day follow-up**: a 3rd `small`-tier LLM endpoint (OpenRouter,
+`nvidia/nemotron-3-super-120b-a12b:free`) was added to mitigate the cascade above — a burst
+now has to exhaust 3 providers' quotas, not 2. The originally-requested model
+(`qwen/qwen2.5-coder-7b-instruct`) doesn't exist on OpenRouter (404, live-checked); no
+qwen-coder variant is free. This endpoint's reasoning trace lands in its own `reasoning`
+field but still spends from `max_tokens`, so the guardrail's shared budget was raised
+500 → 1100 to stop it truncating on history-bearing prompts. Not a complete fix — this free
+endpoint 502'd twice in 3 live test calls; accepted for prototype scale (~10-15 concurrent).
+
+## Session record — 2026-09-08, location-resolver cleanup, GFS wiring, dead-code removal
+
+A combined simplification pass. Two requested changes were checked against documented
+design decisions first (Chesterton's Fence) and declined after confirming why the fence was
+there: making Nominatim the primary geocoder would route every query through its shared
+`asyncio.Lock` throttle (confirmed live: it's a process-wide serialization point, not
+per-call pacing) — exactly `FIXES.md` §2.3, already scoped and declined once. Provider order
+(Geoapify → Open-Meteo → Nominatim) is unchanged. `normalize.py`'s `ALIASES` table (25
+colloquial names) also stays — it prevents real, documented mis-resolutions and is a
+name-rewrite table, not a coordinate gazetteer.
+
+**What did change:**
+
+**`location_resolver/seed.py` removed.** Its 8-city gazetteer + 7-PIN dict were a
+last-resort fallback used only when every live provider failed. Removing it surfaced a real
+finding: 6 tests (`test_api_contracts.py`, `test_auth.py`, `test_reviewer.py`) posted a real
+"Nagpur" query against the live endpoints with no location mock at all — passing only
+because `seed.py`'s Nagpur entry silently absorbed occasional live-network flakiness under
+full-suite load (isolated single-test runs never showed it). Fixed by mocking
+`resolve_location` in all 6, the pattern `test_multi_location.py` already used. The
+underlying flakiness itself (why full-suite load occasionally makes `open_meteo`/`nominatim`
+raise `RuntimeError`) wasn't root-caused — candidate suspects are shared `httpx` client
+lifecycle or Nominatim's throttle lock under rapid concurrent real requests.
+
+**Dead code removed, not just flagged this time.** `app.storage.session_store` — confirmed
+genuinely unused (repo-wide grep, unlike `conversation_log` which turned out to be a
+wireable seam) — deleted along with its `build_session_store()` factory and the config
+fields that became dead the moment it was gone (`session_ttl_seconds`, `session_max_entries`,
+plus the separately zero-reader `rank_weights_total`/`conversation_max_turns`). Kept the
+`SessionStore` Protocol and `InMemorySessionStore` class — both still live via
+`session_router.py`'s own four store instances.
+
+**GFS fully wired, live-verified end to end.** The adapter/decoder
+(`app/adapters/grib2_adapter.py`, `app/decoders/grib2_placeholder.py`) were already
+complete — confirmed by direct read before touching anything, purely blocked on
+`cfgrib`/`eccodes`/`xarray` not being in the Docker image. Fixed: `Dockerfile` now installs
+`libeccodes0`/`libeccodes-data` (apt) + `requirements-full.txt` (pip, was
+`requirements-api.txt`) — live-verified by actually building the image (`import cfgrib`
+raises `RuntimeError: Cannot find the ecCodes library` without the apt packages, confirmed
+live, so they're genuinely required). Also expanded GFS from 2 decoded variables to 6:
+`UGRD`/`VGRD` (wind, combined into speed/direction), `RH` (humidity), `PRMSL` (pressure,
+Pa→hPa) alongside the existing temperature/precipitation. Live-verified inside the built
+image: a real fetch against Nagpur's coordinates decoded all 6 with physically plausible
+values (31.9°C, 3.1 m/s wind, 56% humidity, 1007 hPa). Building the image live also hit "no
+space left on device" copying this repo's own `.venv/` — there was no `.dockerignore` at
+all; added one, which closes half of `BUG.md` B20 (the `.env`-in-image half; the
+`pytest`-in-runtime-image half needs a `requirements-dev.txt` split, not done here).
+
+**Weather-metrics gap audited**, not built. Confirmed via direct registry/code inspection:
+`new-source-aqi`/`new-source-sunrise-sunset` were already tracked in `io.md` as not-started
+(still accurate). Snowfall, pollen, and soil moisture/temperature had **no code, schema
+entry, or roadmap line anywhere** — added as new `io.md` rows. `wind_gust` already exists
+in `CanonicalVariable`/`variable_registry.py` but no adapter populates it — flagged as the
+cheapest win (Open-Meteo forecast already has a `wind_gusts_10m` field alongside the
+`wind_speed_10m` it fetches).
+
+**Adapters/decoders/prompts verified clean** — all 10 registered adapters have exactly one
+matching decode path, no dead decoder files, all 3 `app/prompts/` subdirectories have
+substantive content in all 3 required files. Nothing to simplify there.
+
+**Verified:** `pytest -q` 397 passed (5 new for GFS's expanded decode) · `ruff`/`mypy`
+clean · GFS live-verified inside an actually-built Docker image, not just import-checked.
+
 ## Outstanding work register
 
 Merged here from the former `cloud.md` (deleted 2026-09-05). This is what **remains**; the
@@ -586,8 +658,13 @@ detailed narrative behind each entry.**
 | Source | Missing | Effect |
 |---|---|---|
 | **IMD** (authority 0.95) | `IMD_API_KEY`, `IMD_API_BASE` | India's own met authority absent. The 5 decoder variants in `imd_json.py` have never run against real data. Register at `api.imd.gov.in/public/login.php`; IP whitelisting, so the EC2 elastic IP must exist first. |
-| **GFS/GRIB2** | `cfgrib`/`eccodes`/`xarray` | Adapter self-reports unavailable. Needs `requirements-full.txt`; eccodes needs system libs, and the Docker image still installs only `requirements-api.txt`. |
 | **STORMGLASS** | `STORMGLASS_API_KEY` | Marine fallback unexercised. Primary (`OPEN_METEO_MARINE`, keyless) works. Needs a paid key. |
+
+**GFS/GRIB2 — no longer blocked, wired 2026-09-08.** `Dockerfile` now installs
+`libeccodes0`/`libeccodes-data` (apt) + `requirements-full.txt` (pip); live-verified by
+building the image and running a real GFS fetch inside it — 6 variables decode
+(temperature, precipitation, wind speed/direction, humidity, pressure), up from 2. See the
+2026-09-08 session record below.
 
 CAP (authority 1.0) is live and keyless on NDMA's Sachet feed, so IMD is no longer the only
 route to Indian warnings — it would add forecasts, observations and rainfall on top.
@@ -665,7 +742,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 **Tests:**
 ```bash
-pytest -q                                # full suite (393+ tests as of last verified run)
+pytest -q                                # full suite (397+ tests as of last verified run)
 pytest tests/test_ceo.py::test_comparable_gate   # single test
 ```
 `testpaths=["tests"]` and `pythonpath=["."]` are set in `pyproject.toml`, so `pytest` runs correctly from repo root without extra flags.
@@ -682,9 +759,12 @@ mypy app             # ignore_missing_imports = true
 ```bash
 docker compose up --build   # python:3.10-slim, exposes :8001
 ```
-Only `requirements-api.txt` is installed in the image — GFS/GRIB2 stays unavailable
-inside the container too (see Next steps). `AWS.md` has the full EC2 deploy path
-(Docker + a `weathergpt.service` systemd unit so it survives reboot).
+The image installs `requirements-full.txt` (not just `requirements-api.txt`) plus
+`libeccodes0`/`libeccodes-data` as of 2026-09-08, so GFS/GRIB2 is available inside the
+container — live-verified by building the image and running a real fetch. `.dockerignore`
+(added the same session) excludes `.venv/`, `.git/`, `tests/`, `.env`, `*.db` from the
+build context. `AWS.md` has the full EC2 deploy path (Docker + a `weathergpt.service`
+systemd unit so it survives reboot).
 
 ## Architecture
 

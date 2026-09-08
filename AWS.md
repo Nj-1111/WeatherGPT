@@ -112,10 +112,11 @@ browser) for the contract. They call `POST /query` with
 - `docker compose down && docker compose up -d --build` to deploy an update; the systemd
   unit doesn't need touching for routine updates, only for path/service changes.
 
-## Known gap
+## GFS/GRIB2 — closed 2026-09-08
 
-The Docker image installs `requirements-api.txt` only — GFS/GRIB2 support
-(`requirements-full.txt`: cfgrib/eccodes/xarray) is not built in, since eccodes also
-needs system-level C libraries this Dockerfile doesn't install yet. GFS will self-report
-unavailable in `/health`, same as running locally without it. Not attempted here — flag
-if you actually need GFS live.
+The Docker image now installs `requirements-full.txt` (cfgrib/eccodes/xarray) plus the
+system `libeccodes0`/`libeccodes-data` packages the pip `eccodes` package needs at import
+time (confirmed live: it installs cleanly without them, then raises `RuntimeError: Cannot
+find the ecCodes library` on import). Live-verified by building the image and running a
+real fetch — GFS decodes 6 variables (temperature, precipitation, wind speed/direction,
+humidity, pressure). Nothing further to do here for a standard deploy.

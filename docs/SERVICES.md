@@ -403,7 +403,7 @@ STORMGLASS.
 | MET_NORWAY | 0.75 | Live. Added specifically as an independent vendor — see below. |
 | GEFS | 0.70 | Live. **Not an independent vendor** — it is `ensemble-api.open-meteo.com`, the same provider as `OPEN_METEO`. Its members are excluded from corroboration and disagreement (`ranker.group_comparable`, `AUDIT.md` A1). |
 | OPEN_METEO | 0.70 | Live |
-| GFS | 0.70 | Off — needs the GRIB2 libraries |
+| GFS | 0.70 | Live as of 2026-09-08 (Docker image installs `requirements-full.txt` + system `libeccodes`). Decodes 6 variables (temperature, precipitation, wind speed/direction, humidity, pressure), up from 2. |
 | OPEN_METEO_MARINE | — (marine panel) | Live, keyless. |
 | NASA_POWER | 0.65 | Live |
 | ERA5 | 0.50 | Live (Open-Meteo historical) |
@@ -429,8 +429,15 @@ GEFS remains an Open-Meteo endpoint and is excluded from corroboration according
   centralised in one named place instead of scattered per-adapter literals.
 - **[FIXED]** Bare `except:` in `open_meteo_historical` and `nasa_power` — zero bare
   excepts remain anywhere in `adapters/` or `decoders/`.
-- **[TIDY]** `print()` instead of logging in `grib2_placeholder.py` — low priority; GFS
-  is unavailable in the current deployment regardless (needs `requirements-full.txt`).
+- **[NOT AN ISSUE]** `grib2_placeholder.py`'s only `print()` is inside its documented
+  standalone CLI block (`python -m app.decoders.grib2_placeholder --grib ...`), not the
+  decode path itself, which already logs via `logger.warning` per-variable.
+- **[ADDED, 2026-09-08]** GFS decoding expanded from 2 variables to 6: `_build_request()`
+  now also requests `UGRD`/`VGRD` (wind, 10m), `RH` (humidity, 2m), `PRMSL` (pressure, mean
+  sea level); `decode_grib2_file()` decodes all of them, combining u/v into
+  `wind_speed`/`wind_direction` (meteorological "blowing from" convention) and converting
+  PRMSL Pa→hPa. Docker image now installs `requirements-full.txt` + system
+  `libeccodes0`/`libeccodes-data`. Live-verified inside a built image.
 
 ---
 

@@ -281,18 +281,23 @@ status-code level, and any client branching on `503` alone would silently confla
 Callers should be steered to `error.code`, not the status code.
 
 ### B20 · P3 · Tests and test-only deps ship inside the deployed image — and so does `.env`
-Verified, not inferred: **there is no `.dockerignore` file at all**, and `Dockerfile:11` is
-`COPY . .`. The build context is copied wholesale into the image, so `tests/`, `.git/`, and —
-**the part that is not P3** — `.env` with live `GROQ`/`GEOAPIFY` keys are baked into an image
-layer. `requirements-api.txt:16` also installs `pytest==9.1.1` into the runtime image, so the
-fix is a dependency split plus a `.dockerignore`, not one line.
+**`.dockerignore`/`.env`-in-image half CLOSED 2026-09-08** (found and fixed as a side effect
+of live-testing the GFS Docker build below — a real build hit "no space left on device"
+copying this repo's own `.venv/`, which is exactly the same class of problem as `.env`/
+`tests/` being copied). Added `.dockerignore` excluding `.venv/`, `.git/`, `__pycache__/`,
+`.env`, `tests/`, `*.db`. Live-verified: the image now builds without copying any of these.
 
-Severity is split deliberately: the tests/pytest half is P3 image hygiene; the `.env`-in-image
-half is a **secrets-at-rest exposure** and should be treated as P1 the moment any image is
-pushed to a registry or shared host (`docker history` / a pulled layer reveals the keys —
-`.gitignore` does not apply to Docker build context). Left unfixed here only because this
-session's scope was B1; it should not wait for a general cleanup pass. Rotate the keys if any
-image built from this tree has already left the machine.
+**Still open**: `requirements-api.txt` still installs `pytest==9.1.1` into the runtime
+image (a dependency-split issue, not a `.dockerignore` one — excluding `tests/` from the
+build context doesn't stop `pip install -r requirements-api.txt` from installing the
+`pytest` package itself). Splitting test-only deps into a separate `requirements-dev.txt`
+is the fix; not done here, out of this session's scope.
+
+**Still open, and still the more severe half**: rotate any `GROQ`/`GEOAPIFY`/etc. keys from
+`.env` if an image built from this tree *before* 2026-09-08's `.dockerignore` fix has
+already left this machine (registry push, shared host) — `.gitignore` never applied to the
+Docker build context, so any such image has the keys baked into a layer regardless of this
+fix.
 
 ### B21 · P1 · Guardrail rejected valid conversational follow-ups (context-blind) — CLOSED 2026-09-08
 Not previously logged under a bug ID (found this session, not carried over from an earlier

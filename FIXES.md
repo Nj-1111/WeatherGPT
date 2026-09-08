@@ -32,7 +32,7 @@ that detail. Last updated 2026-09-08 (input-pipeline consolidation + session-awa
 | B7 | P2 | General class: same intent, different phrasing → different guardrail action (specific reported case fixed, class still open) |
 | B18 | P2 | Reviewer's 503 diagnostic echoes both the fabricated and re-derived value to the client |
 | B19 | P3 | `REVIEW_FAILED` is the only 503 today; nothing stops a future one from being indistinguishable |
-| B20 | P1/P3 | No `.dockerignore` — `.env` (live keys) and `tests/`/pytest get baked into the Docker image |
+| B20 | P3 | `.dockerignore`/`.env`-in-image half closed 2026-09-08; `pytest` still installs into the runtime image (dependency-split not done) |
 | — | P2 | **Mitigated, not eliminated 2026-09-08**: an unpaced burst can exhaust the Groq primary tier then cascade-exhaust the Gemini fallback too. A 3rd `small`-tier endpoint (OpenRouter, `SMALL_LLM_FALLBACK_2_*`) now gives a burst 3 quotas to exhaust instead of 2, but that endpoint itself showed transient 502s live — accepted for prototype scale (~10-15 concurrent), not production-hardened. See `BUG.md` B21's note. |
 
 ## AUDIT.md teardown — open (A1-A6, A10 already closed there)
@@ -70,7 +70,6 @@ that detail. Last updated 2026-09-08 (input-pipeline consolidation + session-awa
 - `IMD_API_KEY` — needs the EC2 elastic IP first (registration is IP-whitelisted)
 - `STORMGLASS_API_KEY` — marine fallback built, never live-verified (needs a paid key)
 - `app/services/model_client.py` — bias-correction integration doesn't exist yet (`model.md` has the contract)
-- GFS/GRIB2 — needs `requirements-full.txt` + system libs; unavailable in the Docker image
 
 ## Roadmap — not started (`io.md`, build order)
 
@@ -80,7 +79,10 @@ that detail. Last updated 2026-09-08 (input-pipeline consolidation + session-awa
 4. `personalization` — deferred, unscoped
 
 **Done since the last update**: `capability-selector`, `multi-location`/`multi-time`
-(closes B8), `new-source-visibility` — see `io.md`'s "Done: notes" for the mechanism.
+(closes B8), `new-source-visibility`, `session-aware-guardrail` (closes B21),
+`gfs-full-wiring` (Docker image now installs `requirements-full.txt` + `libeccodes0`/
+`libeccodes-data`, GFS decodes 6 variables live-verified, was 2) — see `io.md`'s
+"Done: notes" for each mechanism.
 
 **Accepted, not bugs:** sub-locality queries (Kalyani/Howrah-style) cost one clarification
 round-trip by design (`ranking.py` deliberately untouched); `lang-match` translates the LLM

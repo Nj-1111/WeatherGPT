@@ -27,11 +27,18 @@ item belongs in `CLAUDE.md`'s session records; this file tracks what's live and 
 | `personalization` | Profile-aware phrasing/detail level beyond the existing `profile` dict passthrough | `response-shape` | deferred, unscoped |
 | `session-aware-guardrail` | Guardrail LLM call sees recent conversation turns, so a contextless follow-up ("can I go play in the evening" after "will it rain in Newtown") is read as a continuation instead of hard-rejected | — | **done (2026-09-08)** — see note |
 | `output-guardrail` | Lenient post-hoc `check_output(response_text) -> OK \| FLAGGED` on the explanation LLM's response (toxicity keywords, leaked-instruction markers, obvious off-topic drift), wired in `main.py` right after `run_explanation_agent`; on `FLAGGED`, degrade through the same `status="partial"` fallback path an explanation failure already uses | — | not started |
+| `gfs-full-wiring` | Install `cfgrib`/`eccodes`/`xarray` in the Docker image + system `libeccodes`; expand GFS's NOMADS request/decode from 2 variables (temp, precip) to 6 (+ wind speed/direction, humidity, pressure) | — | **done (2026-09-08)** — see note |
+| `new-source-snowfall` | Open-Meteo forecast already has a `snowfall` hourly field alongside precipitation — same adapter, no new source | — | not started — untracked gap found 2026-09-08 |
+| `new-source-pollen` | No source identified yet | — | not started — untracked gap found 2026-09-08 |
+| `new-source-soil` | Soil moisture/temperature — Open-Meteo forecast has `soil_moisture_*`/`soil_temperature_*` hourly fields | — | not started — untracked gap found 2026-09-08 |
+| `wind-gust-wiring` | `wind_gust` already exists in `CanonicalVariable`/`variable_registry.py` but no adapter populates it — Open-Meteo forecast has `wind_gusts_10m` alongside the `wind_speed_10m` it already fetches | — | not started — cheap win, schema-ready |
 
 **Build order:** `poi-geocoding` → new-source rows (`new-source-aqi`/`new-source-sunrise-sunset`,
 each needing one live smoke test before writing the decoder — verify against the real API
-first, same pattern every adapter in this repo has followed) → `new-source-tides-moon-astro`
-(needs a source found before it can be scoped) → `response-shape` → `personalization` last.
+first, same pattern every adapter in this repo has followed) → `wind-gust-wiring` (cheapest
+of the new rows, schema already exists) → `new-source-snowfall`/`new-source-soil` (same
+adapter, live smoke test first) → `new-source-pollen`/`new-source-tides-moon-astro` (both
+need a source found before they can be scoped) → `response-shape` → `personalization` last.
 
 ---
 
@@ -167,6 +174,31 @@ quota too, degrading several turns to the deterministic fallback until the burst
 see B21's note for detail; not filed as its own numbered bug yet.
 
 **Deferred, not built this round**: `output-guardrail` (see roadmap row above).
+
+**`gfs-full-wiring`** — the adapter/decoder (`app/adapters/grib2_adapter.py`,
+`app/decoders/grib2_placeholder.py`) were already complete, not stubs — confirmed by direct
+read before touching anything (Chesterton's Fence check), purely blocked on
+`cfgrib`/`eccodes`/`xarray` not being in the Docker image. Two things fixed together:
+1. **Installable**: `Dockerfile` now installs `libeccodes0`/`libeccodes-data` (apt) +
+   `requirements-full.txt` (pip) instead of `requirements-api.txt` alone — live-verified by
+   actually building the image and running `import cfgrib; import eccodes` inside a
+   container (pip's `eccodes` package installs cleanly without the system library, then
+   raises `RuntimeError: Cannot find the ecCodes library` on import — confirmed live, so the
+   apt packages are genuinely required, not a defensive guess).
+2. **More variables**: `_build_request()` now also requests `UGRD`/`VGRD` at 10m (wind),
+   `RH` at 2m (humidity), `PRMSL` at mean sea level (pressure) alongside the existing
+   `TMP`/`APCP`; `decode_grib2_file()` decodes all of them, combining u/v into
+   `wind_speed`/`wind_direction` (meteorological "blowing from" convention, matching every
+   other source in this repo) and converting PRMSL Pa→hPa. Live-verified end to end inside
+   the built image: a real fetch against Nagpur's coordinates decoded 6 CEOs (temperature
+   31.9°C, precipitation, wind speed 3.1 m/s, wind direction 314°, humidity 56%, pressure
+   1007 hPa) — all physically plausible values, not just "didn't crash."
+
+Side effect: building the image live hit "no space left on device" copying this repo's own
+`.venv/` — there was no `.dockerignore` at all. Added one (`.venv/`, `.git/`,
+`__pycache__/`, `.env`, `tests/`, `*.db`), which also closes half of `BUG.md` B20 (the
+`.env`-in-image half); the `pytest`-in-runtime-image half of B20 stays open (a
+`requirements-dev.txt` split, not a `.dockerignore` fix).
 
 ---
 

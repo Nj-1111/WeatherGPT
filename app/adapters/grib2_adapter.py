@@ -54,6 +54,15 @@ def _build_request(run_dt: datetime, lead_hours: int, lat: float, lon: float) ->
         "lev_2_m_above_ground": "on",
         "var_APCP": "on",
         "lev_surface": "on",
+        # Wind components (u/v, combined into speed/direction at decode time), humidity,
+        # and mean-sea-level pressure — all in the same GRIB2 file but previously not
+        # requested, leaving GFS decoding only 2 of its available variables.
+        "var_UGRD": "on",
+        "var_VGRD": "on",
+        "lev_10_m_above_ground": "on",
+        "var_RH": "on",
+        "var_PRMSL": "on",
+        "lev_mean_sea_level": "on",
         "subregion": "",
         "leftlon": round(lon - SUBREGION_BOX_DEG, 2),
         "rightlon": round(lon + SUBREGION_BOX_DEG, 2),

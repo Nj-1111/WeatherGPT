@@ -43,6 +43,9 @@ def test_build_request_shape():
     assert params["dir"] == "/gfs.20260902/06/atmos"
     assert params["var_TMP"] == "on" and params["lev_2_m_above_ground"] == "on"
     assert params["var_APCP"] == "on" and params["lev_surface"] == "on"
+    assert params["var_UGRD"] == "on" and params["var_VGRD"] == "on" and params["lev_10_m_above_ground"] == "on"
+    assert params["var_RH"] == "on"
+    assert params["var_PRMSL"] == "on" and params["lev_mean_sea_level"] == "on"
     assert params["leftlon"] < 79.08 < params["rightlon"]
     assert params["bottomlat"] < 21.14 < params["toplat"]
 
