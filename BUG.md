@@ -294,15 +294,47 @@ pushed to a registry or shared host (`docker history` / a pulled layer reveals t
 session's scope was B1; it should not wait for a general cleanup pass. Rotate the keys if any
 image built from this tree has already left the machine.
 
+### B21 · P1 · Guardrail rejected valid conversational follow-ups (context-blind) — CLOSED 2026-09-08
+Not previously logged under a bug ID (found this session, not carried over from an earlier
+audit). The guardrail classified every query in isolation with zero conversation memory:
+`"will it rain in Newtown"` → `"can I go play in the evening"` hard-rejected the second turn
+(`REJECT_OFF_TOPIC`) because it has no weather vocabulary of its own — even though it's an
+obvious continuation. Distinct from B6 (a genuinely location-less first turn) and B7 (a
+rule-6 phrasing inconsistency): this is a first turn with an established location but a
+*second* turn carrying no topic signal at all, which no prompt-wording fix to a stateless
+classifier could ever solve.
+
+**Fixed**: `app.storage.sqlite.SqliteConversationLog` (see "Dead code" above — built,
+tested, never called) is now wired via `app/services/input_pipeline/conversation_history.py`;
+`app/main.py`'s `_resolve_guardrail_decision` fetches the last `settings.guardrail_history_turns`
+turns and passes them to `run_guardrail`, rendered into the **user** message (never the
+system prompt, so the decision-tree stays stable/cacheable independent of history).
+`app/prompts/guardrail/behavior_rules.md` gained rule 0 (continuation). Decision cache key
+changed from question-text-alone to `(text, history)` — necessary, since the same text can
+now mean different things depending on context.
+
+**Live-verified 2026-09-08** (paced to avoid LLM rate limits — see note below): "will it
+rain in Pune tomorrow" → "can I go play in the evening" now returns a real 200 answer citing
+Pune's rain probability, not a rejection; a Hinglish follow-up ("chatri le jaani chahiye
+kya" after "weather in Indore tomorrow") also resolved correctly; the existing marine
+2-turn follow-up flow (`should I go fishing` → `small boat, four of us`) still works
+unchanged. **New finding from the same live run, not yet filed as its own bug**: a burst of
+~20 requests in under a minute exhausted the Groq primary tier's rate limit, cascading every
+subsequent guardrail/explanation call onto the Gemini fallback fast enough to exhaust
+*its* quota too (`llm.chain_exhausted`, both tiers 400/429 within the same burst) — several
+turns silently degraded to the deterministic fallback (which has none of rule 0's
+continuation logic) until the burst subsided. Worth a dedicated bug entry if bursty
+production traffic is expected; not filed as a numbered item here since it wasn't isolated
+to a single reproducible request shape in this session.
+
 ---
 
 ## Dead code (not defects, but violates the coding rules in `CLAUDE.md`, rule 21)
 
 - **`app.storage.session_store`** — a fully built `InMemorySessionStore` from the backend
   factory, imported nowhere. `session_router.py` builds its own two stores instead.
-- **`app.storage.conversation_log`** (`SqliteConversationLog`) — the `conversation_turns`
-  table and its wrapper exist; nothing ever calls `.append()` or `.recent()`. No
-  conversation history is being recorded despite schema implying otherwise.
+- ~~**`app.storage.conversation_log`** (`SqliteConversationLog`)~~ — **wired 2026-09-08**,
+  no longer dead. See B21 below.
 
 ---
 

@@ -123,9 +123,12 @@ for a single resolved pair (no defined rule yet for which of several borderline 
 get asked). Capped at `settings.max_location_time_pairs` (default 6) by silent truncation,
 not a rejection — closes `BUG.md`'s B8.
 
-**`session-aware-guardrail`** — closes the `BUG.md` B6/B7 class root cause: the guardrail
-had no conversation memory at all, so a contextless follow-up ("can I go play in the
-evening" after "will it rain in Newtown") was judged on its own text and hard-rejected.
+**`session-aware-guardrail`** — closes `BUG.md`'s new B21 (distinct from B6/B7 — a
+genuinely location-less first turn and a rule-6 phrasing inconsistency, respectively; this
+is a *second* turn with no topic signal at all, which no stateless-classifier prompt fix
+could close): the guardrail had no conversation memory at all, so a contextless follow-up
+("can I go play in the evening" after "will it rain in Newtown") was judged on its own text
+and hard-rejected.
 `app/storage/sqlite.py`'s `SqliteConversationLog` (protocol-conformant, tested, but never
 called by anything) is now wired live via `app/services/input_pipeline/
 conversation_history.py`'s `record_turn`/`recent_turns` (both `asyncio.to_thread`-wrapped,
@@ -151,6 +154,17 @@ convention), gained an official-source-escalation sentence, and a `ContextRetrie
 (`app/services/input_pipeline/context_retriever.py`, returns `[]` today) is now wired into
 `run_explanation_agent` → `_fact_sheet`'s new `context_docs` param, so RAG is a fill-in-the-
 blank later, not a re-architecture.
+
+**Live-verified 2026-09-08** against a real running server with real LLM keys, paced to
+avoid rate limits: the Newtown/park-child scenario, a Hinglish umbrella follow-up, and the
+existing marine 2-turn flow all resolved correctly end to end (real answers, not
+rejections); the mountain-pass scenario correctly carried "Manali" forward into the same
+genuine geocoding ambiguity turn 1 hit (2 real places named Manali) rather than either
+rejecting or silently guessing — the right behavior, not a bug. Full detail in `BUG.md` B21.
+**Also surfaced, not yet fixed**: an unpaced burst (~20 requests/minute) exhausted the Groq
+primary tier's rate limit, cascading enough fallback traffic onto Gemini to exhaust its
+quota too, degrading several turns to the deterministic fallback until the burst subsided —
+see B21's note for detail; not filed as its own numbered bug yet.
 
 **Deferred, not built this round**: `output-guardrail` (see roadmap row above).
 

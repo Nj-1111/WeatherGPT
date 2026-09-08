@@ -332,7 +332,7 @@ than the Gemini fallback (2-6s) that had been silently absorbing every call unti
 ```bash
 cd ~/weathergpt && source .venv/bin/activate
 pip install -r requirements-api.txt
-pytest -q                                    # expect 256+ passed, 1 pre-existing unrelated failure
+pytest -q                                    # expect 393+ passed, both ruff/mypy clean
 ruff check app tests && mypy app             # both clean
 set -a && source .env && set +a && uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
@@ -513,6 +513,66 @@ which framing is right (then deleting a Protocol-conformance-tested abstraction,
 formally re-labeling it a seam) needs a call, not an incidental sweep; left for a dedicated
 pass.
 
+## Session record — 2026-09-08, input-pipeline consolidation + session-aware guardrail
+
+Two changes shipped together: a pure reorganization (no behavior change), then the actual
+defect fix it set up.
+
+**Input pipeline consolidated.** `app/services/guardrail.py`, `app/services/
+query_guardrail.py`, and `app/services/location_resolver/normalize.py` — three files doing
+guardrail/preprocessing work but scattered directly under `app/services/` — moved into
+`app/services/input_pipeline/` (`safety.py`, `query_guardrail.py`, `normalize.py`) as one
+visible surface. `guardrail.py` renamed to `safety.py` on the move since, grouped together,
+the two guardrail module names read as confusingly similar. Placement rule going forward:
+pipeline *logic* lives in `input_pipeline/`; pipeline *prompt content* lives in
+`app/prompts/`, never inline in code.
+
+**The actual defect — the guardrail was context-blind.** `run_guardrail` classified every
+query in isolation with zero conversation memory. Live example: "will it rain in Newtown"
+followed by "can I go play in the evening" hard-rejected the second turn (`REJECT_OFF_TOPIC`)
+since it has no weather vocabulary of its own — an obvious continuation to a human, invisible
+to a stateless classifier. Investigation found the fix was cheaper than expected:
+`app.storage.sqlite.SqliteConversationLog` already existed — a real table, Protocol-
+conformant, tested (`tests/test_storage.py`) — but nothing ever called `.append()`/
+`.recent()`. It was dead infrastructure, not missing infrastructure.
+
+**Fixed.** `app/services/input_pipeline/conversation_history.py` wraps that log
+(`asyncio.to_thread`, since the SQLite calls are synchronous). `app/main.py`'s
+`_resolve_guardrail_decision` fetches the last `settings.guardrail_history_turns` (default
+3) turns before calling `run_guardrail`, and records every branch's outcome — including the
+pending-disambiguation/verify/followup resumption paths — so later turns have full context.
+History renders into the guardrail's **user** message, never the system prompt, so the
+decision-tree rules stay stable and cacheable independent of history.
+`app/prompts/guardrail/behavior_rules.md` gained rule 0 (continuation: carry forward an
+established location/topic when the current message is a plausible follow-up) plus a
+`reasoning` diagnostic output field (logged only, never schema-persisted or user-visible —
+useful for exactly this kind of live debugging). The decision cache key changed from
+question-text-alone to `(text, history)`, since the same text can now mean different things
+depending on context; a stateless repeat query keeps its old cache benefit unchanged (empty
+history hashes the same as before). `render_guardrail_message`'s 4 fixed templates gained a
+static Hindi translation for 2 of them (`reject_off_topic`, `clarify`) — no LLM call, since
+the wording never changes.
+
+**Also, in the same pass:** `_EXPLANATION_SYSTEM` (`app/agents/orchestrator.py`) moved from
+an inline string to `app/prompts/explanation/`, matching every other LLM call site's
+`{system_role,behavior_rules,output_format}.md` convention; gained one official-source-
+escalation sentence. A `ContextRetriever` stub (`app/services/input_pipeline/
+context_retriever.py`, returns `[]` today) is wired into `run_explanation_agent` →
+`_fact_sheet`'s new `context_docs` param, so RAG is a fill-in-the-blank later.
+`output-guardrail` (a lenient post-hoc response check) was scoped but deliberately deferred
+to `io.md`'s roadmap, not built this round.
+
+**Verified:** `pytest -q` 393 passed (34 new) · `ruff`/`mypy` clean. **Live-verified**
+against a real running server with real Groq/Gemini keys, paced to avoid rate limits: the
+Newtown/park-child continuation, a Hinglish umbrella follow-up, and the existing marine
+2-turn flow all resolved correctly (real answers, not rejections); a mountain-pass follow-up
+correctly carried "Manali" forward into the same genuine geocoding ambiguity turn 1 hit (2
+real places named Manali) rather than rejecting or guessing. **New finding, not yet fixed**:
+an unpaced burst of ~20 requests/minute exhausted the Groq primary tier's rate limit,
+cascading enough fallback traffic onto Gemini to exhaust its quota too — several turns
+degraded to the deterministic fallback (no continuation logic) until the burst subsided.
+Recorded as `BUG.md` B21 and an `io.md` note; not yet isolated to a single fix.
+
 ## Outstanding work register
 
 Merged here from the former `cloud.md` (deleted 2026-09-05). This is what **remains**; the
@@ -538,9 +598,13 @@ route to Indian warnings — it would add forecasts, observations and rainfall o
   `model.md`; call between the semantic gate and `build_wio` in `main.py`.
   `CanonicalEvidenceObject` already carries the unused `parent_ids`/`transformation`/
   `transformation_timestamp`/`algorithm_version` fields for it.
-- **Multilingual** — transliteration in front of `location_resolver/normalize.py` plus
+- **Multilingual** — transliteration in front of `input_pipeline/normalize.py` plus
   language routing in `time_parser`. Hindi keywords already exist in both
   `retrieval_planner.py` and `time_parser.py`. See `BUG.md` B2/B3.
+- **A `ContextRetriever` for real RAG** — `app/services/input_pipeline/context_retriever.py`
+  exists and is wired into `run_explanation_agent`/`_fact_sheet`, but `retrieve()` returns
+  `[]`. Implementing it (embedding a doc store, or whatever source is chosen) needs no other
+  pipeline change — see Session record 2026-09-08.
 
 ### Known limitations
 
@@ -601,7 +665,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 **Tests:**
 ```bash
-pytest -q                                # full suite (382+ tests as of last verified run)
+pytest -q                                # full suite (393+ tests as of last verified run)
 pytest tests/test_ceo.py::test_comparable_gate   # single test
 ```
 `testpaths=["tests"]` and `pythonpath=["."]` are set in `pyproject.toml`, so `pytest` runs correctly from repo root without extra flags.
@@ -629,8 +693,10 @@ WeatherGPT is an evidence-grounded weather intelligence backend, not a "call an 
 ### Request flow (`POST /query`, `app/main.py:_weather_request`)
 
 ```
-query_guardrail.run_guardrail  (one LLM call → GuardrailAction; fixed decision-tree prompt,
-                                 never the LLM's own judgment — see Session record 2026-09-04)
+input_pipeline.query_guardrail.run_guardrail  (one LLM call, now session-aware — sees the
+                                 last few conversation turns — → GuardrailAction; fixed
+                                 decision-tree prompt, never the LLM's own judgment — see
+                                 Session record 2026-09-04 and 2026-09-08)
   ├─ REJECT_OFF_TOPIC / CLARIFY / VERIFY / UNSUPPORTED_TOPIC → fixed template message, return now
   ├─ ACCEPT_LOCATION_ONLY → location_resolver only → return now (no retrieval/fusion/agents/RADE)
   └─ ACCEPT_WEATHER_FULL ↓

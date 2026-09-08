@@ -64,7 +64,8 @@ blended into an arithmetic mean with a model forecast.
 POST /query
   |
   1. guardrail            check_question_fast (deterministic reject) then
-                          query_guardrail.run_guardrail (one LLM call -> a strict
+                          input_pipeline.query_guardrail.run_guardrail (one LLM call, now
+                          session-aware -- sees recent conversation turns -- -> a strict
                           GuardrailAction; deterministic fallback if the LLM is down)
   2. location_resolver    "Indore" -> 22.7196, 75.8577
   3. time_parser          "tomorrow" -> 2026-09-03 00:00 .. 23:59
@@ -195,10 +196,12 @@ coordinates -> cache -> PIN code -> normalized name -> providers -> rank -> ambi
 
 - `detect.py` — pure regex. Is this input already coordinates? Is it a six-digit
   Indian PIN code? No network, no I/O.
-- `normalize.py` — deterministic cleanup. Collapses whitespace, strips punctuation,
-  applies a small alias table (Bombay->Mumbai, Calcutta->Kolkata). `extract_place_phrase`
-  pulls "Indore" out of "will it rain in Indore tomorrow" by matching lead-in patterns
-  ("weather in", "rain in") and stripping trailing time words.
+- `input_pipeline/normalize.py` (moved out of `location_resolver/` 2026-09-08 — its
+  place-phrase extraction is shared with the guardrail's deterministic fallback, not
+  location-resolution-only) — deterministic cleanup. Collapses whitespace, strips
+  punctuation, applies a small alias table (Bombay->Mumbai, Calcutta->Kolkata).
+  `extract_place_phrase` pulls "Indore" out of "will it rain in Indore tomorrow" by
+  matching lead-in patterns ("weather in", "rain in") and stripping trailing time words.
 - `providers/` — three keyless services, tried in order. Open-Meteo Geocoding first
   (structured, gives population and admin hierarchy); Nominatim/OSM second (covers
   Indian districts, small towns and historical names Open-Meteo lacks); India Post for
@@ -773,8 +776,9 @@ raises 503 if the reviewer failed. `_synthesize` builds the answer string from t
   exempt) and an optional `WEATHERGPT_API_KEYS` gate now sit in `RequestIDMiddleware`.
 - **[FIXED]** No input guardrail — any question reached location resolution and
   triggered real upstream calls. `check_question_fast` (deterministic, zero upstream
-  calls) plus `query_guardrail.run_guardrail` (one LLM call to a strict
-  `GuardrailAction`, cached since 2026-09-05, `AUDIT.md` A4) now run first.
+  calls) plus `input_pipeline.query_guardrail.run_guardrail` (one LLM call to a strict
+  `GuardrailAction`, cached since 2026-09-05, `AUDIT.md` A4; session-aware since
+  2026-09-08 — sees recent conversation turns) now run first.
 - **[FIXED]** The catch-all handler discarded the exception. `unhandled_error` now logs
   it with `logger.exception` (full traceback) before returning the generic 500.
 - **[FIXED]** `int(request.headers["content-length"])` on an unguarded client header
@@ -805,6 +809,15 @@ raises 503 if the reviewer failed. `_synthesize` builds the answer string from t
   multiply the explanation LLM call by the pair count) and the pending-followup clarifying
   question (no defined rule yet for which of several borderline pairs to ask about) — both
   are skipped whenever more than one pair is resolved, not silently guessed at.
+- **[ADDED, 2026-09-08]** Session-aware guardrail. `_resolve_guardrail_decision` now fetches
+  the last `settings.guardrail_history_turns` conversation turns (via the previously-dead
+  `app.storage.conversation_log`, now wired through `app/services/input_pipeline/
+  conversation_history.py`) and passes them to `run_guardrail`, so a contextless follow-up
+  ("can I go play in the evening" after "will it rain in Newtown") is read as a
+  continuation instead of hard-rejected. Every branch of `_resolve_guardrail_decision`
+  (including pending-disambiguation/verify/followup resumption) records its outcome so
+  later turns have full context. Live-verified; see `CLAUDE.md`'s 2026-09-08 session
+  record and `BUG.md` B21.
 
 ---
 
@@ -849,7 +862,7 @@ The five decisions this document originally asked for were all made and implemen
    `check_question_fast` ahead of any network call, then an LLM-classified
    `GuardrailAction` (accept-location-only / accept-weather-full / reject / clarify /
    verify / unsupported-topic) with a deterministic fallback when the LLM is
-   unavailable. See `app/services/guardrail.py` and `query_guardrail.py`.
+   unavailable. See `app/services/input_pipeline/safety.py` and `query_guardrail.py`.
 4. **Rate limit numbers** — implemented as `rate_limit_per_minute`/`rate_limit_per_day`
    in `config.py`, defaulting to 30/min as suggested and **1000/day**, not the 500/day
    originally suggested here — raised during implementation, not a discrepancy to chase.

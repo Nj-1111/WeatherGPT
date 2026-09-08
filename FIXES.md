@@ -4,7 +4,7 @@ Current-status index across security, correctness, and roadmap. Supersedes and r
 `docs/security-audit-2026-09-03.md` (fully merged below). Deep-dive narrative and
 reproduction steps for each item still live in `BUG.md` (defect register) and `AUDIT.md`
 (2026-09-05 teardown) — this file is the short "what's open" list, not a replacement for
-that detail. Last updated 2026-09-07 (capability-selector + multi-location/time round).
+that detail. Last updated 2026-09-08 (input-pipeline consolidation + session-aware-guardrail round).
 
 ## Security — 8 of 11 closed
 
@@ -22,7 +22,7 @@ that detail. Last updated 2026-09-07 (capability-selector + multi-location/time 
 | §2.10 | CAP feed SSRF/XXE surface | closed 2026-09-07 |
 | §2.11 | Raw exception text leaked into `retrieval_status` | closed 2026-09-07 |
 
-## Correctness bugs — open (BUG.md; F1-F6/B1/B4/B5 already closed there)
+## Correctness bugs — open (BUG.md; F1-F6/B1/B4/B5/B21 already closed there)
 
 | ID | Sev | Issue |
 |---|---|---|
@@ -33,6 +33,7 @@ that detail. Last updated 2026-09-07 (capability-selector + multi-location/time 
 | B18 | P2 | Reviewer's 503 diagnostic echoes both the fabricated and re-derived value to the client |
 | B19 | P3 | `REVIEW_FAILED` is the only 503 today; nothing stops a future one from being indistinguishable |
 | B20 | P1/P3 | No `.dockerignore` — `.env` (live keys) and `tests/`/pytest get baked into the Docker image |
+| — | P2 | **New, not yet filed as a numbered bug**: an unpaced burst of requests can exhaust the Groq primary tier's rate limit, cascade enough fallback traffic onto Gemini to exhaust its quota too, and degrade several in-flight turns to the deterministic fallback until the burst subsides — live-observed 2026-09-08, see `BUG.md` B21's note |
 
 ## AUDIT.md teardown — open (A1-A6, A10 already closed there)
 
@@ -46,12 +47,13 @@ that detail. Last updated 2026-09-07 (capability-selector + multi-location/time 
 
 ## Dead code / hygiene
 
-- `app.storage.session_store`, `app.storage.conversation_log` — built, imported nowhere.
-  **Flagged, not removed 2026-09-07**: `tests/test_storage.py` frames the same
-  `SessionStore`/`ConversationLog` Protocols as a deliberate seam ("the seam that makes
-  Redis/Postgres a config change, not a rewrite"), which conflicts with this line's own
-  "dead code" framing. Needs a call on which framing is right before deleting a
+- `app.storage.session_store` — built, imported nowhere. **Flagged, not removed 2026-09-07**:
+  `tests/test_storage.py` frames the `SessionStore` Protocol as a deliberate seam ("the seam
+  that makes Redis/Postgres a config change, not a rewrite"), which conflicts with this
+  line's own "dead code" framing. Needs a call on which framing is right before deleting a
   Protocol-conformance-tested abstraction, not an incidental sweep.
+- ~~`app.storage.conversation_log`~~ — **wired 2026-09-08**, no longer dead; see `BUG.md`
+  B21 and `io.md`'s `session-aware-guardrail` entry.
 - `config.py`: `rank_weights_total`, `conversation_max_turns` — zero readers
 - ~~`.env.example`/`.env`: `HF_TOKEN`, `HF_REPO_ID` — leftover from the removed training
   repo~~ — closed 2026-09-07, removed from both files along with the stale
@@ -76,10 +78,11 @@ that detail. Last updated 2026-09-07 (capability-selector + multi-location/time 
 (closes B8), `new-source-visibility` — see `io.md`'s "Done: notes" for the mechanism.
 
 **Accepted, not bugs:** sub-locality queries (Kalyani/Howrah-style) cost one clarification
-round-trip by design (`ranking.py` deliberately untouched); `lang-match` only translates
-the LLM explanation — every fixed template/message stays English-only; the
-`warning-agent-geofilter` fix shipped without a live before/after re-measurement of the
-original nationwide-CAP scenario.
+round-trip by design (`ranking.py` deliberately untouched); `lang-match` translates the LLM
+explanation plus (as of 2026-09-08) 2 of the 4 fixed guardrail templates for Hindi only via
+a static table — every other language and the `verify`/`unsupported_topic` templates still
+fall back to English, see `io.md`'s `lang-match` note; the `warning-agent-geofilter` fix
+shipped without a live before/after re-measurement of the original nationwide-CAP scenario.
 
 ## Suggested order
 

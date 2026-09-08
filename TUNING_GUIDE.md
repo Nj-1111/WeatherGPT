@@ -7,12 +7,15 @@ see `docs/SERVICES.md`/`CLAUDE.md` for that. This is for hands-on tinkering.
 
 | Want to change... | Edit |
 |---|---|
-| The LLM's decision-tree rules (what counts as in-scope, what triggers CLARIFY/VERIFY/UNSUPPORTED_TOPIC) | `app/services/query_guardrail.py` — `_SYSTEM_PROMPT` |
-| The exact wording of a clarify/verify/unsupported/reject message | same file — `_CLARIFY_MESSAGES` dict and `render_guardrail_message()` |
+| The LLM's decision-tree rules (what counts as in-scope, what triggers CLARIFY/VERIFY/UNSUPPORTED_TOPIC, the continuation rule 0) | `app/prompts/guardrail/behavior_rules.md` |
+| How many prior conversation turns the guardrail sees before deciding | `app/config.py` — `guardrail_history_turns` (default 3) |
+| The exact wording of a clarify/verify/unsupported/reject message (English) | `app/services/input_pipeline/query_guardrail.py` — `_CLARIFY_MESSAGES` dict and `render_guardrail_message()` |
+| A translated wording for a fixed guardrail message in another language | same file — `_TRANSLATIONS` (currently Hindi only, `reject_off_topic`/`clarify`) |
 | Which keywords the *deterministic fallback* (LLM down) treats as location-only, or as an unsupported disaster type | same file — `_LOCATION_ONLY_WORDS`, `_UNSUPPORTED_DISASTER_WORDS` |
-| Which keywords the cheap pre-LLM gate accepts as on-topic at all | `app/services/guardrail.py` — `TOPIC_WORDS` |
+| Which keywords the cheap pre-LLM gate accepts as on-topic at all | `app/services/input_pipeline/safety.py` — `TOPIC_WORDS` |
 | Add a new `GuardrailAction` (a new kind of decision branch) | `app/schemas/query.py` (enum + `GuardrailDecision` fields) → wire the new branch into `app/main.py`'s `_GUARDRAIL_ERROR_CODES` / `_weather_request` |
 | Confirmation-reply words for VERIFY ("yes"/"haan"/...) | `app/main.py` — `_AFFIRMATION_WORDS` |
+| The main assistant's tone/behavior (hedging, clarifying question, official-source escalation) | `app/prompts/explanation/behavior_rules.md` |
 
 ## Output — the actual answer text and response shape
 

@@ -4,7 +4,7 @@ Approved 2026-09-04. Build order below; every module is now built or explicitly 
 
 | Module id | Responsibility | Depends on | Status |
 |---|---|---|---|
-| `guardrail-template` | Structured LLM decision step: ACCEPT_LOCATION_ONLY / ACCEPT_WEATHER_FULL / REJECT_OFF_TOPIC / CLARIFY / VERIFY, strictly template-driven (fixed decision-tree prompt, not the LLM's own judgment) | — | **Built** — `app/services/query_guardrail.py`, `tests/test_query_guardrail.py` |
+| `guardrail-template` | Structured LLM decision step: ACCEPT_LOCATION_ONLY / ACCEPT_WEATHER_FULL / REJECT_OFF_TOPIC / CLARIFY / VERIFY, strictly template-driven (fixed decision-tree prompt, not the LLM's own judgment); session-aware since 2026-09-08 (sees recent conversation turns) | — | **Built** — `app/services/input_pipeline/query_guardrail.py`, `tests/test_query_guardrail.py` |
 | `intent-dispatch` | Wires the guardrail's decision into `main.py`'s actual control flow: location-only fast path (skips retrieval/fusion/agents/RADE entirely), clarify/verify short-circuit (return immediately, no location resolution attempted), full-pipeline path unchanged. Also retires the now-superseded `query_extractor.py`/`NormalizedQuery`. | `guardrail-template` | **Built** |
 | `output-templates` | Strict per-branch response schema (reject / clarify / verify / location-only / full-weather), plus a config-driven output tone directive for the explanation LLM | `intent-dispatch` | **Built (basic)** |
 | `guardrail-disaster-broadening` | Widen accepted topics (marine/fishing, mountain/trek, weather-driven disaster, route/travel); new `UNSUPPORTED_TOPIC` action for hazard types with no data source (earthquake, tsunami, wildfire, landslide, volcanic, drought) | `guardrail-template` | **Built** |
