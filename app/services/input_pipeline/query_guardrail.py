@@ -190,9 +190,13 @@ _LLM_KWARGS = {
     # fixed decision-tree classification, and a reasoning-capable model burns its hidden
     # reasoning against this same max_tokens budget (see llm/client.py's note). 280 was
     # enough for the primary endpoint but confirmed live to truncate the fallback
-    # endpoint's response mid-JSON (finish_reason "length" at ~260 tokens); 500 gives
-    # headroom on both without depending on either endpoint's specific reasoning cost.
-    "max_tokens": 500,
+    # endpoint's response mid-JSON (finish_reason "length" at ~260 tokens); 500 gave
+    # headroom on both. Raised to 1100 (2026-09-08) for the 3rd chain endpoint
+    # (nvidia/nemotron-3-super-120b-a12b:free via OpenRouter): its reasoning trace lands in
+    # a separate `reasoning` field (reasoning_format: hidden respected), but still spends
+    # from this same budget, and a history-bearing rule-0 continuation prompt needs >500 to
+    # avoid truncating before the JSON answer. Harmless headroom for Groq/Gemini too.
+    "max_tokens": 1100,
     "reasoning_effort": "low",
 }
 

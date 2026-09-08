@@ -327,6 +327,23 @@ continuation logic) until the burst subsided. Worth a dedicated bug entry if bur
 production traffic is expected; not filed as a numbered item here since it wasn't isolated
 to a single reproducible request shape in this session.
 
+**Mitigated 2026-09-08 (same day)**: a 3rd `small` tier endpoint added
+(`SMALL_LLM_FALLBACK_2_*` in `.env`, OpenRouter — `nvidia/nemotron-3-super-120b-a12b:free`,
+picked up automatically by `app/config.py:_llm_chain`'s existing generic loop, no code
+change to the chain-walk itself). A burst now has to exhaust three independent providers'
+quotas, not two, before degrading to the deterministic fallback. Two things live-verified
+about this specific endpoint before trusting it: `qwen/qwen2.5-coder-7b-instruct` (the
+initially requested model) doesn't exist on OpenRouter (404) and no qwen-coder variant is
+free, so a general-purpose free model was substituted; and that model's reasoning trace
+lands in a separate `reasoning` field (unlike the earlier `<think>`-in-content bug) but
+still spends from the same `max_tokens` budget, truncating the guardrail's JSON on a
+history-bearing rule-0 prompt at the old budget of 500 — raised to 1100
+(`query_guardrail.py`'s `_LLM_KWARGS`) to fix it, confirmed live with `finish_reason: stop`
+and a correct rule-0 continuation answer. **Not a complete fix**: this specific free
+endpoint 502'd twice in 3 live test calls (upstream overload) — accepted as-is for a
+prototype expected to handle ~10-15 concurrent requests, not hardened for production burst
+traffic (no circuit breaker, no per-endpoint budget beyond the shared bump above).
+
 ---
 
 ## Dead code (not defects, but violates the coding rules in `CLAUDE.md`, rule 21)
