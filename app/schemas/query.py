@@ -24,6 +24,9 @@ class GuardrailAction(str, Enum):
 class ClarifyReason(str, Enum):
     GARBLED_INPUT = "garbled_input"
     NO_LOCATION = "no_location"
+    # The classifying LLM was unreachable and the deterministic fallback has no reliable,
+    # language-agnostic way to judge topic relevance — asks rather than guesses.
+    SERVICE_DEGRADED = "service_degraded"
 
 
 PairingMode = Literal["locations_x_shared_time", "times_x_shared_location", "full_cross_product"]

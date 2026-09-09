@@ -1,4 +1,8 @@
-"""Deterministic input gate, applied before any network call — strict by design: a question with no weather term is rejected rather than guessed at, since every accepted request spends upstream quota under our IP."""
+"""Deterministic input gate, applied before any network call. Only ever a positive fast-path
+(a keyword hit lets a request skip ahead) — a miss is never treated as proof a question is
+off-topic, since a fixed keyword list cannot cover every language. Real topic/language
+judgement is the guardrail LLM's job (query_guardrail.py); when that's unavailable, an
+unmatched question degrades to a clarifying question, never a false rejection."""
 from __future__ import annotations
 
 import re
@@ -7,6 +11,8 @@ from app.config import settings
 from app.errors import WeatherGPTError
 from app.orchestrator.retrieval_planner import has_word
 
+# A positive-only accelerator: a hit lets the deterministic fallback accept immediately
+# without waiting on anything else. A miss proves nothing — it is never used to reject.
 TOPIC_WORDS = (
     "weather", "forecast", "rain", "rainfall", "rains", "raining", "shower", "showers",
     "temperature", "temp", "hot", "cold", "heat", "humid", "humidity", "wind", "windy",
@@ -60,13 +66,9 @@ def check_question_fast(question: str) -> None:
         raise WeatherGPTError("QUESTION_REJECTED", reason, {"question_length": len(question or "")}, 400)
 
 
-def check_question(question: str) -> None:
-    """Full deterministic gate: fast checks plus the topic-word check. Used directly when the guardrail runs standalone, and as query_guardrail.run_guardrail's LLM-unavailable fallback, so topic relevance still gets some check rather than none."""
-    if not settings.guardrail_enabled:
-        return
-    text = (question or "").strip()
-    reason = _fast_reason(text)
-    if reason is None and not has_word(text.casefold(), TOPIC_WORDS):
-        reason = "Question is not a weather request. Ask about weather conditions, or a weather-dependent decision."
-    if reason:
-        raise WeatherGPTError("QUESTION_REJECTED", reason, {"question_length": len(text)}, 400)
+def is_definitely_weather_related(question: str) -> bool:
+    """Positive-only signal: True means a known weather/marine/travel word matched (safe to
+    fast-path an accept). False means nothing matched — that is NOT evidence of being
+    off-topic, only that this fixed list didn't recognize the wording or language. Callers
+    must never turn False into a rejection; that judgement call belongs to the guardrail LLM."""
+    return has_word((question or "").strip().casefold(), TOPIC_WORDS)

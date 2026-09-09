@@ -146,17 +146,32 @@ def test_llm_unavailable_falls_back_for_weather_question(monkeypatch):
 
 
 def test_llm_unavailable_falls_back_detected_lang_stays_en(monkeypatch):
-    """The deterministic fallback never attempts language detection (io.md's minimal
+    """The deterministic fallback never attempts language detection (docs/REPORT.md's minimal
     lang-match scope) — it always carries the field's default."""
     _stub_llm(monkeypatch, None, available=False)
     result = asyncio.run(query_guardrail.run_guardrail("কলকাতায় এখন কি বৃষ্টি হচ্ছে"))
     assert result.detected_lang == "en"
 
 
-def test_llm_unavailable_falls_back_for_off_topic(monkeypatch):
+def test_llm_unavailable_falls_back_to_clarify_on_keyword_miss(monkeypatch):
+    """A keyword miss during an LLM outage must never be treated as proof of being off-topic
+    — the fallback has no reliable way to judge relevance in that state, so it asks rather
+    than falsely rejects. This holds for English text that just isn't weather-related..."""
     _stub_llm(monkeypatch, None, available=False)
     result = asyncio.run(query_guardrail.run_guardrail("who is the prime minister of India"))
-    assert result.action == GuardrailAction.REJECT_OFF_TOPIC
+    assert result.action == GuardrailAction.CLARIFY
+    assert result.clarify_reason == ClarifyReason.SERVICE_DEGRADED
+
+
+def test_llm_unavailable_falls_back_to_clarify_for_uncovered_language(monkeypatch):
+    """...and identically for a genuine weather question in a language the fixed keyword
+    list has no coverage for (Bengali, in Latin transliteration) — this is the actual bug:
+    the old fallback rejected this exact question as off-topic simply because its words
+    weren't in an English/Hindi-only list."""
+    _stub_llm(monkeypatch, None, available=False)
+    result = asyncio.run(query_guardrail.run_guardrail("kolkata te ajke brishti hobe ki"))
+    assert result.action == GuardrailAction.CLARIFY
+    assert result.clarify_reason == ClarifyReason.SERVICE_DEGRADED
 
 
 def test_llm_unavailable_falls_back_for_location_only(monkeypatch):

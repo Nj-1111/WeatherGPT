@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The developer working in this repo owns **only the ML / data / training / inference-serving portions**. This is a hard scope boundary, not a preference:
 
-**In scope:** the data pipeline (Open-Meteo/ERA5/GFS/IMD/NASA POWER/CAP retrieval), the CEO→WIO fusion pipeline (`app/services/`, `app/schemas/ceo.py`, `app/schemas/wio.py`), the bias-correction model's *integration path* (`app/services/model_client.py` — **not yet written**, see `model.md` for the contract it must implement; training happens in a separate repo), the LLM/agent orchestration layer (`app/agents/`, `app/orchestrator/`), the RADE decision engine (`app/rade/`), and the FastAPI inference-serving surface (`app/main.py`) as an API provider — plus the MLOps around all of that (checkpointing/hosting is the separate model repo's concern now; this repo's MLOps scope is basic EC2 inference deployment of the orchestration API).
+**In scope:** the data pipeline (Open-Meteo/ERA5/GFS/IMD/NASA POWER/CAP retrieval), the CEO→WIO fusion pipeline (`app/services/`, `app/schemas/ceo.py`, `app/schemas/wio.py`), the bias-correction model's *integration path* (`app/services/model_client.py` — **not yet written**, see `docs/REPORT.md`'s "Bias-correction model integration contract" for the contract it must implement; training happens in a separate repo), the LLM/agent orchestration layer (`app/agents/`, `app/orchestrator/`), the RADE decision engine (`app/rade/`), and the FastAPI inference-serving surface (`app/main.py`) as an API provider — plus the MLOps around all of that (checkpointing/hosting is the separate model repo's concern now; this repo's MLOps scope is basic EC2 inference deployment of the orchestration API).
 
 **Permanently out of scope — do not propose or generate code for these unless explicitly asked:** any Android/mobile client, any dedicated frontend/UI, general backend/product engineering (auth, user accounts, billing, non-inference API surface), voice/TTS/STT, Nginx/Vercel/HF-Space *website* deployment, and CI/CD or release engineering beyond basic version control.
 
@@ -648,10 +648,10 @@ clean · GFS live-verified inside an actually-built Docker image, not just impor
 ## Outstanding work register
 
 Merged here from the former `cloud.md` (deleted 2026-09-05). This is what **remains**; the
-session records above are what was fixed. `BUG.md` is the defect register, `AUDIT.md` the
-2026-09-05 teardown. **`FIXES.md` is the current, compact "what's still open" index across
-security/bugs/roadmap — check there first; this section and the two files above carry the
-detailed narrative behind each entry.**
+session records above are what was fixed. **`docs/REPORT.md`** (consolidated 2026-09-09
+from the former `BUG.md`/`AUDIT.md`/`FIXES.md`/`io.md`) is the current, compact "what's
+still open" index across security/bugs/roadmap — check there first; this section carries
+additional detail that's specific to this file's own register.
 
 ### Blocked on credentials
 
@@ -672,12 +672,15 @@ route to Indian warnings — it would add forecasts, observations and rainfall o
 ### Seams — intentionally empty, do not delete
 
 - **ML bias correction** — `app/services/model_client.py` does not exist. Create per
-  `model.md`; call between the semantic gate and `build_wio` in `main.py`.
-  `CanonicalEvidenceObject` already carries the unused `parent_ids`/`transformation`/
-  `transformation_timestamp`/`algorithm_version` fields for it.
+  `docs/REPORT.md`'s "Bias-correction model integration contract"; call between the
+  semantic gate and `build_wio` in `main.py`. `CanonicalEvidenceObject` already carries the
+  unused `parent_ids`/`transformation`/`transformation_timestamp`/`algorithm_version`
+  fields for it.
 - **Multilingual** — transliteration in front of `input_pipeline/normalize.py` plus
   language routing in `time_parser`. Hindi keywords already exist in both
-  `retrieval_planner.py` and `time_parser.py`. See `BUG.md` B2/B3.
+  `retrieval_planner.py` and `time_parser.py`. The guardrail's own topic/fallback path is
+  now language-proof (2026-09-09, `docs/REPORT.md`); this item is about deeper surfaces
+  (time-phrase parsing, place-name extraction) that still lean on English/Hindi patterns.
 - **A `ContextRetriever` for real RAG** — `app/services/input_pipeline/context_retriever.py`
   exists and is wired into `run_explanation_agent`/`_fact_sheet`, but `retrieve()` returns
   `[]`. Implementing it (embedding a doc store, or whatever source is chosen) needs no other
@@ -701,7 +704,7 @@ route to Indian warnings — it would add forecasts, observations and rainfall o
   404s across workers, and each worker pays its own guardrail cache miss. Run one worker.
 - Nominatim is throttled 1 req/s per process; multiple workers can exceed OSM policy. That
   same throttle is also a single shared lock across every concurrent request (§2.3,
-  `FIXES.md`) — one client forcing several Nominatim fallbacks
+  `docs/REPORT.md`) — one client forcing several Nominatim fallbacks
   can serialize location resolution for everyone else to 1/sec. Scoped, then declined
   2026-09-07 (see the security-audit item above); revisit if this ever sits behind a
   proxy with multiple real tenants.
@@ -731,7 +734,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-api.txt      # everything needed to run the app + test suite
 pip install -r requirements-full.txt     # adds GRIB2 decoding (cfgrib/eccodes/xarray) on top of requirements-api.txt
 ```
-Two files. ML training moved to a separate repo (see `model.md`), so this repo carries no torch/ML dependency — `requirements-api.txt` alone runs the app and the test suite, and now lists only what is actually imported (fastapi, uvicorn, pydantic, httpx, pytest; pyyaml, shapely, pint, tenacity, orjson, python-dotenv and python-multipart were removed as unused). `requirements-full.txt` adds only the 3 packages the GRIB2 path imports (`cfgrib`, `eccodes`, `xarray`).
+Two files. ML training moved to a separate repo (see `docs/REPORT.md`'s bias-correction integration contract), so this repo carries no torch/ML dependency — `requirements-api.txt` alone runs the app and the test suite, and now lists only what is actually imported (fastapi, uvicorn, pydantic, httpx, pytest; pyyaml, shapely, pint, tenacity, orjson, python-dotenv and python-multipart were removed as unused). `requirements-full.txt` adds only the 3 packages the GRIB2 path imports (`cfgrib`, `eccodes`, `xarray`).
 
 If `pip` itself is missing and you can't get sudo/`apt install python3-venv` in a sandboxed environment: `curl -sS https://bootstrap.pypa.io/get-pip.py | python3 - --user --break-system-packages`, then `pip install --user --break-system-packages <packages>`.
 
@@ -753,7 +756,9 @@ ruff check .        # line-length 100, target py310
 mypy app             # ignore_missing_imports = true
 ```
 
-**Training**: no longer happens in this repo — see `model.md` for the full handoff (dataset methodology, real validated results, and the integration contract `app/services/model_client.py` must implement once written).
+**Training**: no longer happens in this repo — see `docs/REPORT.md`'s "Bias-correction
+model integration contract" for the full handoff (real validated results and the
+integration contract `app/services/model_client.py` must implement once written).
 
 **Docker:**
 ```bash
@@ -763,8 +768,8 @@ The image installs `requirements-full.txt` (not just `requirements-api.txt`) plu
 `libeccodes0`/`libeccodes-data` as of 2026-09-08, so GFS/GRIB2 is available inside the
 container — live-verified by building the image and running a real fetch. `.dockerignore`
 (added the same session) excludes `.venv/`, `.git/`, `tests/`, `.env`, `*.db` from the
-build context. `AWS.md` has the full EC2 deploy path (Docker + a `weathergpt.service`
-systemd unit so it survives reboot).
+build context. `docs/AWS.md` has the full EC2 deploy path (Docker + a `weathergpt.service`
+systemd unit so it survives reboot); `README.md` has the condensed quickstart version.
 
 ## Architecture
 
@@ -798,9 +803,9 @@ location_resolver → time_parser → retrieval_planner (deterministic — LLM n
 
 **RADE (`app/rade/v2.py`, function `decide`)** — the risk-aware decision engine for questions like "should I spray." Builds 2 (or, with ensemble member data, 5-bin) scenarios from `wio.weather.rain`, scores each action as `expected_utility − risk_lambda·downside_risk`, picks the argmax. Returns `defer_decision` rather than guessing when evidence is insufficient — never fabricates a probability or amount. This is the *only* RADE implementation in the repo — an older parallel v1 (`enumerator.py`/`utility.py`/`policy.py`) existed and was silently computed-but-discarded on every request; it and its frozen `kaggle_kernel/` snapshot were both deleted (see "Known state" below).
 
-### Bias-correction model — integration path only, training lives elsewhere (`model.md`, `app/services/model_client.py`)
+### Bias-correction model — integration path only, training lives elsewhere (`docs/REPORT.md`, `app/services/model_client.py`)
 
-ML model training (GFS-forecast-vs-ERA5-reanalysis bias correction, formerly `training/` + `kaggle_kernel_m3/` in this repo) was moved out entirely to a separate repo. `model.md` at the repo root is the full handoff document: dataset construction methodology, feature engineering, real validated baseline results (LightGBM vs. ridge vs. no-correction on a real 24,960-row dataset), the MLP architecture that was attempted but never got a real GPU run, and — most importantly — the exact HTTP API contract this repo expects from that model once it exists.
+ML model training (GFS-forecast-vs-ERA5-reanalysis bias correction, formerly `training/` + `kaggle_kernel_m3/` in this repo) was moved out entirely to a separate repo. `docs/REPORT.md`'s "Bias-correction model integration contract" section is the current handoff: the exact HTTP API contract this repo expects from that model once it exists (dataset methodology and full feature-engineering detail now live in the separate training repo, not here).
 
 **`app/services/model_client.py` does not exist yet** — this section describes the intended design, not current code. When written it should be a thin HTTP adapter calling the external model API, and be invoked between the semantic gate and `build_wio` in `app/main.py` so corrected values flow into fusion with a `provenance.transformations[]` entry. `CanonicalEvidenceObject` already carries unused `parent_ids`/`transformation`/`transformation_timestamp`/`algorithm_version` fields for exactly this. Until then every response uses raw, uncorrected forecast evidence, which `/health` reports honestly as `models.bias_correction`.
 
@@ -815,15 +820,16 @@ India is preferred by **scoring, not filtering** (`ranking.py`): `log10(populati
 ## Known state, don't assume otherwise
 
 - Root-level `architecture.md`, `implementation.md`, `report.md`, `setup.md`, `INSTALL.md`, and ten dated `docs/*_2026-09-01.md`/planning docs described an earlier/aspirational system built by a previous developer (a different machine path, a different Kaggle account, a fully-live Groq multi-agent pipeline, nonexistent endpoints like `GET /plan`, self-reported metrics later found unverified, and — in `report.md` — a partially-visible API key fragment) that did not match current code. Deleted as stale in this session; `README.md` and `docs/PROOF_OF_WORK.md` remain the accurate source of truth.
-- No ML metric currently in this repo is independently validated — the real validated baseline numbers (LightGBM/ridge vs. no-correction) that used to be summarized in `docs/PROOF_OF_WORK.md` now live in `model.md`, since ML training itself moved to a separate repo.
+- No ML metric currently in this repo is independently validated — the real validated baseline numbers (LightGBM/ridge vs. no-correction) now live in the separate training repo, not here; `docs/REPORT.md` carries only the integration contract.
 - The old RADE v1 snapshot (`kaggle_kernel/`) and the M1/M3 training kernels (`kaggle_kernel_checker/`, `kaggle_kernel_official/`) were deleted along with M1/M3 themselves — do not reference or try to resurrect them. The bias-correction model (formerly `kaggle_kernel_m3/`, informally "M3") is unrelated to the deleted M3 intent-parser above — don't confuse them if the name resurfaces in old commits.
 - The outstanding-work register lives in this file (above `## Commands`). Read it before proposing work.
 - `docs/SERVICES.md` explains every service in plain language — mechanism, connections, and known faults. Start there.
-- All ML training code (`training/`, `kaggle_kernel_m3/`) and the Kaggle training guide were removed from this repo as of this change — training now happens in a separate repo. See `model.md` for the full handoff.
-- `CAPABILITY_MAP.md` tracks the 2026-09-04 guardrail/marine/geoapify initiative module by module — read it for what's built vs. deferred. The per-module `SPEC-*.md` files and `tasks/` were merged into it and deleted 2026-09-05.
-- `TUNING_GUIDE.md` maps "I want to change X" to the exact file — check there before searching.
-- `io.md` is the input/output generalization roadmap (language matching, multi-location/multi-time, POI geocoding, new meteorological/astronomical sources) — a living document, update it in the same change as anything it describes, not after.
-- `AWS.md` + `weathergpt.service` are the EC2 deployment path (Docker + systemd, survives reboot).
+- All ML training code (`training/`, `kaggle_kernel_m3/`) and the Kaggle training guide were removed from this repo as of this change — training now happens in a separate repo. See `docs/REPORT.md`'s integration contract for the handoff.
+- `docs/REPORT.md` (consolidated 2026-09-09 from the former `AUDIT.md`/`BUG.md`/`FIXES.md`/
+  `io.md`/`CAPABILITY_MAP.md`/`TUNING_GUIDE.md`) is now the single current-status/roadmap
+  document — check it before searching for "which file do I edit" or "what's still open."
+- `docs/AWS.md` + `weathergpt.service` are the full EC2 deployment path (Docker + systemd,
+  survives reboot); `README.md` has the condensed scp/rsync quickstart version.
 
 ## Code style
 

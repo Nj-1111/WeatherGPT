@@ -2,7 +2,7 @@
 import pytest
 
 from app.errors import WeatherGPTError
-from app.services.input_pipeline.safety import check_question
+from app.services.input_pipeline.safety import check_question_fast, is_definitely_weather_related
 from app.services.rate_limit import RateLimiter
 
 
@@ -14,7 +14,21 @@ from app.services.rate_limit import RateLimiter
     "kal baarish hogi kya",
 ])
 def test_real_weather_questions_are_accepted(question):
-    check_question(question)
+    check_question_fast(question)
+    assert is_definitely_weather_related(question)
+
+
+@pytest.mark.parametrize("question", [
+    "who is the prime minister of India",
+    "write me a sonnet about databases",
+    "e bhai kolkataye brishti hocche naki",  # Bengali in Latin script — no English/Hindi
+    # keyword present; must NOT be reported as weather-related by the keyword list, but
+    # check_question_fast must still let it through (fast checks only judge structure,
+    # never topic) — a fixed list cannot cover every language, and must not pretend to.
+])
+def test_keyword_miss_is_not_treated_as_rejection(question):
+    check_question_fast(question)  # never raises for topic reasons — structural checks only
+    assert not is_definitely_weather_related(question)  # a miss, but NOT evidence of off-topic
 
 
 @pytest.mark.parametrize("question", [
@@ -28,23 +42,21 @@ def test_real_weather_questions_are_accepted(question):
 ])
 def test_injection_shapes_are_rejected(question):
     with pytest.raises(WeatherGPTError) as exc:
-        check_question(question)
+        check_question_fast(question)
     assert exc.value.code == "QUESTION_REJECTED"
     assert exc.value.status_code == 400
 
 
 @pytest.mark.parametrize("question,fragment", [
     ("hi", "too short"),
-    ("who is the prime minister of India", "not a weather request"),
-    ("write me a sonnet about databases", "not a weather request"),
     ("rain http://evil.test", "URL"),
     ("rain\x00tomorrow", "control characters"),
     ("rain " * 61, "words"),
     ("rain " * 200, "characters"),
 ])
-def test_off_topic_and_malformed_are_rejected(question, fragment):
+def test_malformed_input_is_rejected(question, fragment):
     with pytest.raises(WeatherGPTError) as exc:
-        check_question(question)
+        check_question_fast(question)
     assert fragment in exc.value.message
 
 
@@ -54,7 +66,7 @@ def test_guardrail_rejects_before_any_network_call():
 
     from app.main import _weather_request
     source = inspect.getsource(_weather_request)
-    assert source.index("check_question") < source.index("_resolve_location")
+    assert source.index("check_question_fast") < source.index("_resolve_location")
 
 
 def test_minute_burst_is_limited():

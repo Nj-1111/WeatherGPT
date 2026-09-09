@@ -39,7 +39,7 @@ Before these fixes, the exact query above returned `503 REVIEW_FAILED`. After, i
 
 ## 2. ML pipeline validity — moved to a separate repo
 
-ML model training (GFS-forecast-vs-ERA5-reanalysis bias correction) was moved out of this repo entirely as of this change; `training/` and `kaggle_kernel_m3/` no longer exist here. The real validated baseline numbers this section used to summarize (LightGBM/ridge vs. no-correction, on the real 24,960-row dataset), the dataset construction methodology, and the architecture attempted are all preserved in `model.md` at the repo root, which also documents the HTTP API contract this repo now expects from that model. This document's remaining sections (§1, §3) cover the agent pipeline, not ML training, and are unaffected by this change.
+ML model training (GFS-forecast-vs-ERA5-reanalysis bias correction) was moved out of this repo entirely as of this change; `training/` and `kaggle_kernel_m3/` no longer exist here. The real validated baseline numbers this section used to summarize (LightGBM/ridge vs. no-correction, on the real 24,960-row dataset), the dataset construction methodology, and the architecture attempted are all preserved in `docs/REPORT.md` at the repo root, which also documents the HTTP API contract this repo now expects from that model. This document's remaining sections (§1, §3) cover the agent pipeline, not ML training, and are unaffected by this change.
 
 ---
 
@@ -51,4 +51,4 @@ Commits this session (`git log`):
 
 `pytest -q`: **20/20 passing**, confirmed after every change in this list, not just at the end.
 
-What this session did *not* do: wire the LLM (`groq_client.py`) into the live explanation path (still returns empty claims — see `CLAUDE.md`'s "known state" section), or run the actual Kaggle GPU training (ML training has since moved to a separate repo — see `model.md`).
+What this session did *not* do: wire the LLM (`groq_client.py`) into the live explanation path (still returns empty claims — see `CLAUDE.md`'s "known state" section), or run the actual Kaggle GPU training (ML training has since moved to a separate repo — see `docs/REPORT.md`).

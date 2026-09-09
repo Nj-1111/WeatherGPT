@@ -18,7 +18,7 @@ _CAPITAL_TYPES = {"city", "administrative"}
 class NominatimGeocoder:
     name = "nominatim"
 
-    # OSM's fair-use policy is a hard 1 req/sec, IP-blocked if exceeded, and nothing else enforces it, so the provider paces itself — deliberately a single process-wide lock (a known shared-bottleneck tradeoff, see §2.3 in FIXES.md), not per-client.
+    # OSM's fair-use policy is a hard 1 req/sec, IP-blocked if exceeded, and nothing else enforces it, so the provider paces itself — deliberately a single process-wide lock (a known shared-bottleneck tradeoff, see §2.3 in docs/REPORT.md), not per-client.
     _lock = asyncio.Lock()
     _last_request_at = 0.0
 

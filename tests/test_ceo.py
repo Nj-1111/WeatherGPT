@@ -120,7 +120,7 @@ def _forecast_ceo():
 
 
 def test_filter_covered_warnings_drops_an_unrelated_state_warning():
-    """The bug io.md's warning-agent-geofilter closes: a nationwide CAP feed must not
+    """The bug docs/REPORT.md's warning-agent-geofilter closes: a nationwide CAP feed must not
     reach either run_warning_agent's claims or wio.evidence for a state the user isn't
     in. Applied upstream of build_wio, so this proves both surfaces at once."""
     warning = _polygonless_warning("Brahmaputra, Dhubri, Dhubri, Assam")

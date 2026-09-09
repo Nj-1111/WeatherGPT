@@ -14,7 +14,7 @@ from app.rade.v2 import CLARIFYING_FIELDS
 from app.schemas.query import ClarifyReason, GuardrailAction, GuardrailDecision
 from app.services.cache import TTLCache
 from app.services.input_pipeline.normalize import extract_place_phrase
-from app.services.input_pipeline.safety import TOPIC_WORDS, check_question
+from app.services.input_pipeline.safety import is_definitely_weather_related
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def _extract_location_only_phrase(text: str) -> str | None:
 
 
 def _is_location_only_phrasing(casefolded_text: str) -> bool:
-    return has_word(casefolded_text, _LOCATION_ONLY_WORDS) and not has_word(casefolded_text, TOPIC_WORDS)
+    return has_word(casefolded_text, _LOCATION_ONLY_WORDS) and not is_definitely_weather_related(casefolded_text)
 
 
 def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
@@ -148,7 +148,12 @@ def _parse(raw_text: str, llm_text: str) -> GuardrailDecision | None:
 
 
 def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
-    """Used when the LLM is unavailable or returns unparseable output. Never returns CLARIFY(garbled_input) or VERIFY — those need real language understanding, not a keyword match; CLARIFY(no_location) and UNSUPPORTED_TOPIC are the exceptions since both are still binary keyword checks."""
+    """Used when the LLM is unavailable or returns unparseable output. A keyword HIT is still
+    a safe positive signal (fast-path accept/route). A keyword MISS is never treated as
+    evidence of being off-topic — a fixed list cannot cover every language, so this function
+    has no reliable way to judge relevance without the LLM and must not pretend otherwise.
+    On a miss it asks the caller to retry/clarify (CLARIFY/service_degraded) rather than
+    falsely rejecting a legitimate question the list simply didn't recognize."""
     text = (raw_text or "").strip()
     casefolded = text.casefold()
     unsupported = next((word for word in _UNSUPPORTED_DISASTER_WORDS if has_word(casefolded, (word,))), None)
@@ -166,18 +171,16 @@ def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
         return GuardrailDecision(original_text=text, action=GuardrailAction.CLARIFY,
                                  clarify_reason=ClarifyReason.NO_LOCATION, confidence=1.0,
                                  extraction_source="deterministic_fallback")
-    try:
-        check_question(text)
-        is_weather_related = True
-    except Exception:
-        is_weather_related = False
-    action = GuardrailAction.ACCEPT_WEATHER_FULL if is_weather_related else GuardrailAction.REJECT_OFF_TOPIC
     # capabilities stays empty here deliberately: retrieval_planner's own keyword matching
     # already decides what to fetch from the raw question text independent of capabilities
     # (capabilities only widens coverage beyond what keywords catch, which the deterministic
     # path — itself keyword-only — cannot do any better on anyway).
-    return GuardrailDecision(original_text=text, action=action, locations=locations,
-                             confidence=1.0, extraction_source="deterministic_fallback")
+    if is_definitely_weather_related(casefolded):
+        return GuardrailDecision(original_text=text, action=GuardrailAction.ACCEPT_WEATHER_FULL,
+                                 locations=locations, confidence=1.0, extraction_source="deterministic_fallback")
+    return GuardrailDecision(original_text=text, action=GuardrailAction.CLARIFY,
+                             clarify_reason=ClarifyReason.SERVICE_DEGRADED, locations=locations,
+                             confidence=0.0, extraction_source="deterministic_fallback")
 
 
 # One LLM call per distinct question, not per request. A fallback decision is never stored — it's a degraded read and must not outlive the outage that produced it.
@@ -286,32 +289,74 @@ def _parse_followup_answer(text: str, domain: str) -> dict:
     return update
 
 
+# Fixed English wording — the source of truth for every template. Never per-language: adding
+# a language here would repeat exactly the mistake this module now avoids elsewhere (a list
+# that must be maintained per language and silently fails outside it).
 _CLARIFY_MESSAGES: dict[ClarifyReason, str] = {
     ClarifyReason.GARBLED_INPUT: "I couldn't understand that — could you rephrase?",
     ClarifyReason.NO_LOCATION: "Which location is this about?",
+    ClarifyReason.SERVICE_DEGRADED: "I couldn't process that just now — could you try again?",
 }
+_REJECT_OFF_TOPIC = ("I can only answer questions about weather, marine/fishing conditions, "
+                    "mountain weather, weather-driven disaster risk, travel planning, or location.")
 
-# Static translations only, no LLM call — these 4 messages never change, so a table is
-# cheaper and faster than a per-request translation call. Extend per language as needed;
-# an unlisted detected_lang falls back to English rather than failing.
-_REJECT_OFF_TOPIC_HI = ("मैं केवल मौसम, समुद्री/मछली पकड़ने की स्थिति, पहाड़ी मौसम, "
-                        "मौसम-जनित आपदा जोखिम, यात्रा योजना, या स्थान से जुड़े सवालों के जवाब दे सकता हूँ।")
-_CLARIFY_MESSAGES_HI: dict[ClarifyReason, str] = {
-    ClarifyReason.GARBLED_INPUT: "मुझे समझ नहीं आया — क्या आप फिर से बता सकते हैं?",
-    ClarifyReason.NO_LOCATION: "यह किस जगह के बारे में है?",
-}
+# Script family, detected from the raw codepoints — not a language, not a word list. Covers
+# only which *alphabet* the fixed template gets shown in when detected_lang is unset/unknown
+# (the deterministic-fallback case); the real per-language detected_lang comes from the LLM
+# and is used as-is when present. Extending to a new script is one tuple entry, not a new
+# per-language translation to maintain forever.
+_SCRIPT_RANGES: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] = (
+    ("hi", ((0x0900, 0x097F),)),   # Devanagari (Hindi, Marathi, Nepali, ...)
+    ("bn", ((0x0980, 0x09FF),)),   # Bengali/Assamese
+    ("ta", ((0x0B80, 0x0BFF),)),   # Tamil
+    ("te", ((0x0C00, 0x0C7F),)),   # Telugu
+    ("kn", ((0x0C80, 0x0CFF),)),   # Kannada
+    ("ml", ((0x0D00, 0x0D7F),)),   # Malayalam
+    ("gu", ((0x0A80, 0x0AFF),)),   # Gujarati
+    ("pa", ((0x0A00, 0x0A7F),)),   # Gurmukhi (Punjabi)
+    ("or", ((0x0B00, 0x0B7F),)),   # Odia
+    ("ur", ((0x0600, 0x06FF), (0x0750, 0x077F))),  # Arabic script (Urdu, Arabic)
+)
+
+
+def _script_family(text: str) -> str:
+    """Best-effort script guess from raw codepoints, stdlib-only. Latin-script languages
+    (English, Hinglish, romanized text generally, Spanish, ...) are indistinguishable this
+    way and all fall through to English — an acceptable degrade for a short fixed template
+    when there is no LLM available to ask, never used for the actual answer content."""
+    for lang, ranges in _SCRIPT_RANGES:
+        if any(any(start <= ord(ch) <= end for start, end in ranges) for ch in text):
+            return lang
+    return "en"
+
+
+# Only languages with a maintained, human-reviewed translation of the 2 fixed templates.
+# `_script_family` can guess a language _translate has no entry for; that just means
+# English, same as any other unlisted language — never a crash, never a fabricated string.
 _TRANSLATIONS: dict[str, dict[str, Any]] = {
-    "hi": {"reject_off_topic": _REJECT_OFF_TOPIC_HI, "clarify": _CLARIFY_MESSAGES_HI},
+    "hi": {
+        "reject_off_topic": ("मैं केवल मौसम, समुद्री/मछली पकड़ने की स्थिति, पहाड़ी मौसम, "
+                             "मौसम-जनित आपदा जोखिम, यात्रा योजना, या स्थान से जुड़े सवालों के जवाब दे सकता हूँ।"),
+        "clarify": {
+            ClarifyReason.GARBLED_INPUT: "मुझे समझ नहीं आया — क्या आप फिर से बता सकते हैं?",
+            ClarifyReason.NO_LOCATION: "यह किस जगह के बारे में है?",
+            ClarifyReason.SERVICE_DEGRADED: "अभी इसे प्रोसेस नहीं कर सका — कृपया फिर से कोशिश करें?",
+        },
+    },
 }
 
 
 def render_guardrail_message(decision: GuardrailDecision) -> str | None:
-    """Fixed, deterministic wording for every non-ACCEPT action; returns None for ACCEPT_LOCATION_ONLY/ACCEPT_WEATHER_FULL, which continue into the pipeline instead. Templates are translated from a static table when detected_lang has one (see _TRANSLATIONS) — never via an LLM call, since the wording never changes."""
-    lang = _TRANSLATIONS.get(decision.detected_lang, {})
+    """Fixed, deterministic wording for every non-ACCEPT action; returns None for
+    ACCEPT_LOCATION_ONLY/ACCEPT_WEATHER_FULL, which continue into the pipeline instead.
+    `detected_lang` (from the LLM, when it ran) picks a maintained translation if one exists;
+    otherwise a stdlib script guess is only ever used to pick between the same handful of
+    maintained translations — never to fabricate a new one. Missing either way, falls back to
+    the fixed English wording, which is always correct even if not localized."""
+    lang_code = decision.detected_lang if decision.detected_lang in _TRANSLATIONS else _script_family(decision.original_text)
+    lang = _TRANSLATIONS.get(lang_code, {})
     if decision.action == GuardrailAction.REJECT_OFF_TOPIC:
-        return lang.get("reject_off_topic",
-                        "I can only answer questions about weather, marine/fishing conditions, "
-                        "mountain weather, weather-driven disaster risk, travel planning, or location.")
+        return lang.get("reject_off_topic", _REJECT_OFF_TOPIC)
     if decision.action == GuardrailAction.CLARIFY:
         messages = lang.get("clarify", _CLARIFY_MESSAGES)
         return messages.get(decision.clarify_reason or ClarifyReason.GARBLED_INPUT,

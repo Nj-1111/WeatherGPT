@@ -11,8 +11,8 @@ was first written, it is marked **[FIXED]** rather than deleted, so the document
 explains *why* the current design looks the way it does — most of the temporal-ranking
 term, the per-timestamp disagreement buckets, and the corroboration rule exist directly
 because of faults recorded here. Faults still open are marked as before; where one is
-already tracked with a finding ID, this document points at `BUG.md`/`AUDIT.md` instead of
-re-describing it, so there is one home per fact — `FIXES.md` is the current open/closed
+already tracked with a finding ID, this document points at `REPORT.md`/`REPORT.md` instead of
+re-describing it, so there is one home per fact — `REPORT.md` is the current open/closed
 status for every finding ID cited below.
 
 ---
@@ -128,7 +128,7 @@ satisfy with no second source involved. RADE reads this field and raised confide
 0.55 -> 0.8 on corroboration that never happened. **Fixed:** `corroborated()` now
 requires two *distinct sources* reporting the same variable at the same timestamp
 (`group_comparable` buckets by `(variable, window, valid_from)`, excluding ensemble
-members since 2026-09-05 for the same reason — see `AUDIT.md` A1).
+members since 2026-09-05 for the same reason — see `REPORT.md` A1).
 
 Full account: `CLAUDE.md`'s "Fusion — the largest correctness fix" session record.
 
@@ -161,7 +161,7 @@ place secrets are read from (the environment, never a file in the repo).
   exists, and only genuinely transient failures are retried. Default 1 since 2026-09-05.
 - **[FIXED]** `database_path` is honoured by `context/store.py`.
 - **[DEAD]** `rank_weights_total`, `conversation_max_turns`,
-  `query_understanding_confidence_threshold` — zero readers (`AUDIT.md` A7).
+  `query_understanding_confidence_threshold` — zero readers (`REPORT.md` A7).
 - **[RISK]** Defaults are evaluated at import, so a config change needs a restart.
   Acceptable, but worth knowing.
 - The values that *should* be here are scattered through the services instead:
@@ -229,7 +229,7 @@ silently picking one. Refusing to guess is correct behaviour and it should stay.
 - **[RISK]** Nominatim's usage policy is a hard maximum of 1 request/second and they
   block violators by IP. `NominatimGeocoder` throttles in-process
   (`nominatim_min_interval_seconds`), but the throttle is class-level state — with
-  multiple uvicorn workers the aggregate can still exceed the policy (`BUG.md` B12).
+  multiple uvicorn workers the aggregate can still exceed the policy (`REPORT.md` B12).
 - **[SLOW]** PIN resolution still costs two network round trips: India Post gives a
   district and state but no coordinates, so the district name is then geocoded.
 - **[FIXED]** Every provider call opened a fresh HTTPS connection. All four providers
@@ -367,7 +367,7 @@ This is exactly right and should be preserved.
 - **[SLOW]** One `source_timeout_seconds` (8s since 2026-09-05) serves both the retrieval
   wrapper and the shared httpx client, so a per-adapter value above it is unreachable.
   Worst case per source is now 2 attempts x 8s + backoff = 16.4s, down from 61.2s; the
-  `gather` itself still has no total deadline (`AUDIT.md` A5).
+  `gather` itself still has no total deadline (`REPORT.md` A5).
 - **[FIXED]** The cache key rounds coordinates to `cache_key_precision` (2dp, ~1km)
   against a ~27km source grid, so a whole city shares one entry.
 - **[FIXED]** On a cache hit, every CEO was `model_copy(deep=True)`-ed purely to stamp a
@@ -401,7 +401,7 @@ STORMGLASS.
 | CAP | 1.00 | Live and keyless on NDMA's Sachet feed. Retrieved on **every** weather query since 2026-09-05 — gating it on warning keywords hid live alerts. |
 | IMD | 0.95 | **Unconfigured** — no API key. India's own met authority is absent. |
 | MET_NORWAY | 0.75 | Live. Added specifically as an independent vendor — see below. |
-| GEFS | 0.70 | Live. **Not an independent vendor** — it is `ensemble-api.open-meteo.com`, the same provider as `OPEN_METEO`. Its members are excluded from corroboration and disagreement (`ranker.group_comparable`, `AUDIT.md` A1). |
+| GEFS | 0.70 | Live. **Not an independent vendor** — it is `ensemble-api.open-meteo.com`, the same provider as `OPEN_METEO`. Its members are excluded from corroboration and disagreement (`ranker.group_comparable`, `REPORT.md` A1). |
 | OPEN_METEO | 0.70 | Live |
 | GFS | 0.70 | Live as of 2026-09-08 (Docker image installs `requirements-full.txt` + system `libeccodes`). Decodes 6 variables (temperature, precipitation, wind speed/direction, humidity, pressure), up from 2. |
 | OPEN_METEO_MARINE | — (marine panel) | Live, keyless. |
@@ -592,7 +592,7 @@ here is invisible to all downstream validation, including the reviewer agent.
 - **[FIXED]** `full_agreement` was asserted from `len(scored) >= 2`, where both objects
   could come from the same source (or, since ensembles were added, one vendor's own
   members). `corroborated()` now requires two *distinct* sources at the same timestamp;
-  ensemble members are excluded from the comparison entirely (`AUDIT.md` A1).
+  ensemble members are excluded from the comparison entirely (`REPORT.md` A1).
 - **[IMPROVED, not fully closed]** Rain amount and probability used to be selected by
   two fully independent loops with no shared source or time. `_rain_panel` now prefers
   the probability from the *same* source as the amount (falling back to a different
@@ -607,7 +607,7 @@ here is invisible to all downstream validation, including the reviewer agent.
 - **[NOW TRACKED AS A8]** The rain panel's probability citation is meant to be the peak
   probability record but cites `probabilities[:1]` (the first, not the peak) —
   `GET /evidence/{id}` on that citation can return a different probability than the
-  one stated. See `AUDIT.md` A8; not yet fixed.
+  one stated. See `REPORT.md` A8; not yet fixed.
 - **[IMPROVED]** `wio.evidence` still includes every surviving non-ensemble CEO, but
   ensemble members now collapse to one summary row instead of each being serialized —
   a decision response that carried ~840 evidence entries now carries ~121.
@@ -690,7 +690,7 @@ provider is only ever a base URL and a model string from the environment. Inert 
 `LLM_ENABLED=true` and a tier's chain is non-empty.
 
 `run_explanation_agent` sends a **fact sheet** built from the WIO panels (never the raw
-question text since 2026-09-05 — see `_fact_sheet`'s `Intent:` line, `AUDIT.md` A6) to
+question text since 2026-09-05 — see `_fact_sheet`'s `Intent:` line, `REPORT.md` A6) to
 the small tier by default. It escalates to the big tier only via
 `_requires_big_llm`'s deterministic trigger — fused sources disagree, or a RADE decision
 ran and landed below `big_llm_complexity_confidence_threshold` — never by asking the
@@ -714,7 +714,7 @@ take the service down.
   records this as "relevance is guaranteed by construction, not by the reviewer."
 - **[BY DESIGN, not a fault]** `historical` and `observation` agents still slice `[:2]`
   off class-filtered evidence rather than reading ranked output. Each claim cites its
-  own CEO, so citations stay self-consistent; documented in `BUG.md`'s "Not bugs" as an
+  own CEO, so citations stay self-consistent; documented in `REPORT.md`'s "Not bugs" as an
   accepted, arbitrary-but-safe selection.
 - **[TIDY]** `AgentResult.status` is a bare string; a typo silently becomes a 503.
 
@@ -784,14 +784,14 @@ raises 503 if the reviewer failed. `_synthesize` builds the answer string from t
 - **[FIXED]** No input guardrail — any question reached location resolution and
   triggered real upstream calls. `check_question_fast` (deterministic, zero upstream
   calls) plus `input_pipeline.query_guardrail.run_guardrail` (one LLM call to a strict
-  `GuardrailAction`, cached since 2026-09-05, `AUDIT.md` A4; session-aware since
+  `GuardrailAction`, cached since 2026-09-05, `REPORT.md` A4; session-aware since
   2026-09-08 — sees recent conversation turns) now run first.
 - **[FIXED]** The catch-all handler discarded the exception. `unhandled_error` now logs
   it with `logger.exception` (full traceback) before returning the generic 500.
 - **[FIXED]** `int(request.headers["content-length"])` on an unguarded client header
   could raise inside middleware. Now guarded with `declared.isdigit()` before the cast.
   (A related but distinct gap remains open: the check trusts `Content-Length` and is
-  bypassable via chunked encoding or an omitted header — `BUG.md` B11.)
+  bypassable via chunked encoding or an omitted header — `REPORT.md` B11.)
 - **[FIXED]** `next(r for r in agents if r.agent_name == "reviewer")` raised
   `StopIteration` if the reviewer was ever absent. Now `next((...), None)` with an
   explicit `if reviewer is None or reviewer.status != "success"` check.
@@ -824,7 +824,7 @@ raises 503 if the reviewer failed. `_synthesize` builds the answer string from t
   continuation instead of hard-rejected. Every branch of `_resolve_guardrail_decision`
   (including pending-disambiguation/verify/followup resumption) records its outcome so
   later turns have full context. Live-verified; see `CLAUDE.md`'s 2026-09-08 session
-  record and `BUG.md` B21.
+  record and `REPORT.md` B21.
 
 ---
 
@@ -835,7 +835,7 @@ pooling, a circuit breaker for dead sources, a coarser cache key, and filtering 
 planned variables are all in place. Rewriting anything in a faster language would save
 milliseconds against network timeouts measured in seconds; not worth a second
 toolchain. Current cold/warm latency: `CLAUDE.md`'s measured-latency table;
-`AUDIT.md` §D for the 2026-09-05 session's changes to it.
+`REPORT.md` §D for the 2026-09-05 session's changes to it.
 
 **Observability. [FIXED]** No logging was configured anywhere outside the location
 resolver, and that output went nowhere. `app/logging_config.py` now configures logging
@@ -864,7 +864,7 @@ The five decisions this document originally asked for were all made and implemen
    `wio_builder._rain_panel`/`_temperature_panel` (3.12).
 2. **"Sources agree" meaning** — the stricter option was chosen: `full_agreement`
    requires two *distinct* sources corroborating the same variable at the same
-   timestamp; one source alone reports `single_source` (3.11-3.12, `AUDIT.md` A1/A3).
+   timestamp; one source alone reports `single_source` (3.11-3.12, `REPORT.md` A1/A3).
 3. **Guardrail strictness** — built as a two-stage gate: a deterministic
    `check_question_fast` ahead of any network call, then an LLM-classified
    `GuardrailAction` (accept-location-only / accept-weather-full / reject / clarify /
