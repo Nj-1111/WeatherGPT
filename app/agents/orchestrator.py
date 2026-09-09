@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
 
@@ -84,7 +85,7 @@ async def run_decision_agent(result, evidence_ids: list[str]) -> AgentResult:
         claims.append(Claim(claim=f"scenario_{scenario.name}", value=scenario.probability, unit="probability", evidence_ids=evidence_ids, confidence=result.confidence, extra={"derivation": _NOT_MEASURED}))
     return AgentResult(agent_name="decision", claims=claims, confidence=result.confidence, execution_time_ms=int((time.time()-start)*1000), model=DETERMINISTIC, status="success")
 
-async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[CanonicalEvidenceObject]) -> AgentResult:
+async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[CanonicalEvidenceObject], comparisons=None) -> AgentResult:
     """The anti-hallucination gate: citing real evidence is necessary but not sufficient — the cited value is recomputed and must match; free-text claims are instead checked for quantities the pipeline never produced."""
     start=time.time()
     by_id={c.evidence_id: c for c in ceos}
@@ -102,7 +103,7 @@ async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[C
             if unknown:
                 continue
             if c.claim == "explanation":
-                ungrounded=check_prose_grounding(str(c.value or ""), wio)
+                ungrounded=check_prose_grounding(str(c.value or ""), wio, comparisons)
                 if not ungrounded:
                     continue
                 detail=f"explanation states {', '.join(ungrounded)}, which no evidence supports"
@@ -124,15 +125,51 @@ async def run_reviewer_agent(agent_results: list[AgentResult], wio, ceos: list[C
 
 _EXPLANATION_SYSTEM = load_prompt("explanation")
 
+# Deterministic lead-in check only — never the raw text itself reaches the fact sheet (see
+# the comment below); a derived boolean carries no injection surface the way free text would.
+_GREETING_LEAD = re.compile(r"^\s*(?:hi+|hello+|hey+|hiya|yo|namaste)\b[,!.\s]*", re.IGNORECASE)
 
-def _fact_sheet(wio, decision, context_docs: list[str] | None = None) -> str:
-    # The raw question is deliberately excluded — it's the one caller-controlled string reaching the model, and check_prose_grounding only constrains numbers, not instructions; query.intent gives the same orientation from a closed, pipeline-derived set.
+
+def _opens_with_greeting(text: str) -> bool:
+    return bool(_GREETING_LEAD.match(text))
+
+
+def _comparison_lines(comparisons) -> list[str]:
+    """Each additional (location, time) pair's fused panels, so a multi-location question is
+    answered about every location instead of only the primary one. Same shape as the primary
+    facts below — values only, still never the raw question."""
+    lines: list[str] = []
+    for other in comparisons or []:
+        name = (other.query.resolved_location.get("normalized_name")
+                or other.query.resolved_location.get("raw", "unknown"))
+        facts = [f"summary {other.weather.summary or 'no compatible evidence'}"]
+        rain = other.weather.rain or {}
+        if rain.get("value_mm") is not None:
+            facts.append(f"precipitation {rain['value_mm']} mm over the window"
+                         + (f", peak probability {round(rain['probability'] * 100)}%"
+                            if rain.get("probability") is not None else ""))
+        temperature = other.weather.temperature or {}
+        if temperature.get("min") is not None:
+            facts.append(f"temperature {temperature['min']} to {temperature['max']} {temperature.get('unit')}")
+        wind = other.weather.wind or {}
+        if wind.get("value_kmh") is not None:
+            facts.append(f"wind up to {wind['value_kmh']} km/h")
+        if other.official_warning.active:
+            facts.append(f"official {other.official_warning.severity} warning: {other.official_warning.event}")
+        lines.append(f"- {name}: " + "; ".join(facts))
+    return lines
+
+
+def _fact_sheet(wio, decision, context_docs: list[str] | None = None, comparisons=None) -> str:
+    # The raw question is deliberately excluded — it's the one caller-controlled string reaching the model, and check_prose_grounding only constrains numbers, not instructions; query.intent gives the same orientation from a closed, pipeline-derived set. Whether it opened with a greeting is sent as a derived boolean instead, for behavior_rules.md's greeting-acknowledgment rule.
     lines=[f"Intent: {wio.query.intent or 'general weather'}",
            f"Location: {wio.query.resolved_location.get('normalized_name') or wio.query.resolved_location.get('raw', 'unknown')}",
            f"Window: {wio.query.valid_from} to {wio.query.valid_to}",
            f"Assessment: {wio.weather.summary or 'no compatible evidence'}"]
     if wio.query.apparent_context:
         lines.append(f"Apparent context: {wio.query.apparent_context}")
+    if _opens_with_greeting(wio.query.raw_text):
+        lines.append("User opened with a greeting.")
     rain=wio.weather.rain or {}
     if rain:
         lines.append(f"Precipitation: {rain.get('value_mm')} mm total over the window"
@@ -165,6 +202,14 @@ def _fact_sheet(wio, decision, context_docs: list[str] | None = None) -> str:
     if missing_fields:
         lines.append("Unresolved factor that could change this: "
                      + " and ".join(field.replace("_", " ") for field in missing_fields) + ".")
+    comparison_lines = _comparison_lines(comparisons)
+    if comparison_lines:
+        primary = (wio.query.resolved_location.get("normalized_name")
+                   or wio.query.resolved_location.get("raw", "unknown"))
+        lines.append(f"This question compares several locations. The figures above are for {primary}. "
+                     "Other locations asked about:")
+        lines.extend(comparison_lines)
+        lines.append("Cover every location listed, not only the first.")
     if context_docs:
         lines.append("Reference material:\n" + "\n".join(context_docs))
     return "\n".join(lines)
@@ -187,7 +232,7 @@ def _requires_big_llm(wio, decision: AgentResult | None) -> bool:
             and decision.confidence < settings.big_llm_complexity_confidence_threshold)
 
 
-async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") -> AgentResult:
+async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en", comparisons=None) -> AgentResult:
     """The one agent that calls an LLM — it explains, never originates a number. Everything it writes passes the reviewer's grounding check; any failure (dead endpoint, exhausted chain, empty reply) degrades to the deterministic template. Prose over fused panels is a small-tier job; the big tier wakes only via `_requires_big_llm`'s trigger, never by asking the small model if it feels out of its depth, and an unconfigured big tier is a no-op fallback to small, not an error."""
     start=time.time()
     def _result(claims, status, model=DETERMINISTIC, errors=None) -> AgentResult:
@@ -200,12 +245,15 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     # Query by intent, not the raw question — the fact sheet excludes the raw question for
     # the same reason (see _fact_sheet's comment); returns [] until a real retriever is wired.
     context_docs=await context_retriever.retrieve(wio.query.intent or "", k=3)
+    # One location's budget per location asked about, so a comparison isn't truncated
+    # mid-city — the cap is per answer, not per place.
+    max_words=settings.llm_max_words * (1 + len(comparisons or []))
     messages=[{"role": "system", "content": _EXPLANATION_SYSTEM.format(
-                  lang=lang, max_words=settings.llm_max_words)},
-              {"role": "user", "content": _fact_sheet(wio, decision, context_docs)}]
+                  lang=lang, max_words=max_words)},
+              {"role": "user", "content": _fact_sheet(wio, decision, context_docs, comparisons)}]
     tier: Tier = "big" if _requires_big_llm(wio, decision) and is_configured("big") else "small"
     tier_llm = big_llm if tier == "big" else small_llm
-    result=await tier_llm(messages, max_tokens=settings.llm_max_words * 4)
+    result=await tier_llm(messages, max_tokens=max_words * 4)
     if not result.available:
         # Never fatal — an unconfigured or unreachable model must not cost the user an answer.
         return _result([], "success" if not is_configured(tier) else "partial",
@@ -216,7 +264,7 @@ async def run_explanation_agent(wio, decision: AgentResult, lang: str = "en") ->
     return _result([Claim(claim="explanation", value=text, evidence_ids=panel_ids, confidence=0.7,
                           extra={"derivation": _NOT_MEASURED})], "success", result.tier)
 
-async def run_all_agents(ceos: list[CanonicalEvidenceObject], wio, user_context: dict[str, Any], lang: str = "en", decision=None) -> list[AgentResult]:
+async def run_all_agents(ceos: list[CanonicalEvidenceObject], wio, user_context: dict[str, Any], lang: str = "en", decision=None, comparisons=None) -> list[AgentResult]:
     # Run independent agents concurrently
     forecast_task = run_forecast_agent(wio)
     warning_task = run_warning_agent(ceos)
@@ -227,8 +275,8 @@ async def run_all_agents(ceos: list[CanonicalEvidenceObject], wio, user_context:
     decision_result = await run_decision_agent(decision, [c.evidence_id for c in ceos])
     results.append(decision_result)
     # Produced before review so the reviewer can check it, but stays last in the returned list — it's the only agent whose output is written by a model.
-    explanation = await run_explanation_agent(wio, decision_result, lang)
-    reviewer = await run_reviewer_agent([*results, explanation], wio, ceos)
+    explanation = await run_explanation_agent(wio, decision_result, lang, comparisons)
+    reviewer = await run_reviewer_agent([*results, explanation], wio, ceos, comparisons)
     results.append(reviewer)
     results.append(explanation)
     return results

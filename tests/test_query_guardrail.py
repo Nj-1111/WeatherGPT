@@ -516,3 +516,79 @@ def test_render_message_falls_back_to_english_for_an_unlisted_language():
     decision = GuardrailDecision(original_text="x", action=GuardrailAction.REJECT_OFF_TOPIC, detected_lang="fr")
     assert query_guardrail.render_guardrail_message(decision) == query_guardrail.render_guardrail_message(
         GuardrailDecision(original_text="x", action=GuardrailAction.REJECT_OFF_TOPIC, detected_lang="en"))
+
+
+def test_llm_accepts_greeting(monkeypatch):
+    _stub_llm(monkeypatch, {"action": "greeting", "locations": [], "time_phrases": [],
+                            "verify_candidate": None, "clarify_reason": None, "confidence": 1.0})
+    result = asyncio.run(query_guardrail.run_guardrail("hi"))
+    assert result.action == GuardrailAction.GREETING
+
+
+def test_deterministic_fallback_accepts_greeting(monkeypatch):
+    _stub_llm(monkeypatch, None, available=False)
+    for text in ("hi", "hello", "hey there", "who are you", "what can you do"):
+        result = asyncio.run(query_guardrail.run_guardrail(text))
+        assert result.action == GuardrailAction.GREETING, text
+    assert result.extraction_source == "deterministic_fallback"
+
+
+def test_deterministic_fallback_does_not_treat_embedded_greeting_as_bare(monkeypatch):
+    _stub_llm(monkeypatch, None, available=False)
+    result = asyncio.run(query_guardrail.run_guardrail("hii will it rain in Pune tomorrow"))
+    assert result.action != GuardrailAction.GREETING
+
+
+def test_render_message_greeting_is_none():
+    from app.schemas.query import GuardrailDecision
+    decision = GuardrailDecision(original_text="hi", action=GuardrailAction.GREETING)
+    assert query_guardrail.render_guardrail_message(decision) is None
+
+
+def _stub_llm_text(monkeypatch, text: str | None, *, available: bool = True):
+    captured: dict = {}
+
+    async def fake_small_llm(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        if not available or text is None:
+            return LLMResult(tier="small", available=False, error="stubbed unavailable")
+        return LLMResult(tier="small", available=True, text=text)
+    monkeypatch.setattr(query_guardrail, "small_llm", fake_small_llm)
+    return captured
+
+
+def test_generate_greeting_reply_calls_llm(monkeypatch):
+    from app.schemas.query import GuardrailDecision
+    captured = _stub_llm_text(monkeypatch, "Hey there! Ready to check the skies whenever you are.")
+    decision = GuardrailDecision(original_text="hi", action=GuardrailAction.GREETING)
+    reply = asyncio.run(query_guardrail.generate_greeting_reply(decision))
+    assert reply == "Hey there! Ready to check the skies whenever you are."
+    assert captured["kwargs"]["temperature"] > 0
+
+
+def test_generate_greeting_reply_varies(monkeypatch):
+    from app.schemas.query import GuardrailDecision
+    decision = GuardrailDecision(original_text="hi", action=GuardrailAction.GREETING)
+    _stub_llm_text(monkeypatch, "Hey! What's the weather question on your mind?")
+    first = asyncio.run(query_guardrail.generate_greeting_reply(decision))
+    _stub_llm_text(monkeypatch, "Hello there, happy to help with anything weather-related.")
+    second = asyncio.run(query_guardrail.generate_greeting_reply(decision))
+    assert first != second
+
+
+def test_generate_greeting_reply_falls_back_on_llm_failure(monkeypatch):
+    from app.schemas.query import GuardrailDecision
+    _stub_llm_text(monkeypatch, None, available=False)
+    decision = GuardrailDecision(original_text="hi", action=GuardrailAction.GREETING)
+    reply = asyncio.run(query_guardrail.generate_greeting_reply(decision))
+    assert reply == query_guardrail._GREETING_FALLBACK
+
+
+def test_generate_greeting_reply_sends_detected_language(monkeypatch):
+    from app.schemas.query import GuardrailDecision
+    captured = _stub_llm_text(monkeypatch, "Namaste! Aap kis jagah ka mausam jaanna chahenge?")
+    decision = GuardrailDecision(original_text="namaste", action=GuardrailAction.GREETING, detected_lang="hi")
+    asyncio.run(query_guardrail.generate_greeting_reply(decision))
+    user_message = captured["messages"][-1]["content"]
+    assert "hi" in user_message

@@ -127,3 +127,29 @@ def test_two_turn_followup_flow_asks_and_uses_answer(monkeypatch):
     data_2 = response_2.json()
     assert data_2["decision"]["recommended_action"] != "go"
     assert guardrail_calls == 1  # not re-invoked on turn 2 — the pending follow-up short-circuits it
+
+
+def test_greeting_short_circuits_before_retrieval(monkeypatch):
+    from app.schemas.query import GuardrailAction, GuardrailDecision
+
+    async def fake_run_guardrail(text, history=None):
+        return GuardrailDecision(original_text=text, action=GuardrailAction.GREETING, confidence=1.0)
+
+    async def fake_generate_greeting_reply(decision):
+        return "Hey! I'm Neel — where would you like to check the weather?"
+
+    async def unexpected_retrieve(*args, **kwargs):
+        raise AssertionError("retrieval must not run for a GREETING decision")
+
+    async def unexpected_resolve_location(*args, **kwargs):
+        raise AssertionError("location resolution must not run for a GREETING decision")
+
+    monkeypatch.setattr("app.main.run_guardrail", fake_run_guardrail)
+    monkeypatch.setattr("app.main.generate_greeting_reply", fake_generate_greeting_reply)
+    monkeypatch.setattr("app.main.retrieve", unexpected_retrieve)
+    monkeypatch.setattr("app.main.resolve_location", unexpected_resolve_location)
+
+    response = asyncio.run(_post("/query", {"question": "hi"}))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "Hey! I'm Neel — where would you like to check the weather?"

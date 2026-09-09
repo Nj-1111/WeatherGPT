@@ -155,10 +155,17 @@ def grounded_values(wio) -> dict[str, set[float]]:
     return allowed
 
 
-def check_prose_grounding(text: str, wio) -> list[str]:
-    """Quantities in free text that the pipeline never produced. Only numbers carrying a physical unit are checked — bare numerals ("the next 24 hours") are prose, not weather claims, and checking them just produces false rejections; the prompt separately forbids introducing any number."""
+def check_prose_grounding(text: str, wio, comparisons=None) -> list[str]:
+    """Quantities in free text that the pipeline never produced. Only numbers carrying a physical unit are checked — bare numerals ("the next 24 hours") are prose, not weather claims, and checking them just produces false rejections; the prompt separately forbids introducing any number.
+
+    A multi-location answer legitimately restates figures from every compared location, so
+    each comparison WIO's own grounded values count as grounded too — without this the
+    reviewer suppresses exactly the answers the comparison feature exists to produce."""
     ungrounded: list[str] = []
     allowed = grounded_values(wio)
+    for other in comparisons or []:
+        for unit, values in grounded_values(other).items():
+            allowed[unit] |= values
     for raw_value, raw_unit in _QUANTITY.findall(text or ""):
         normalised = _normalise_unit(raw_unit)
         if normalised is None:

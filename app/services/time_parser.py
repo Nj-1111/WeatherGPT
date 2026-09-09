@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import settings
 from app.constants import IST
+from app.orchestrator.retrieval_planner import has_word
 
 _MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 # Each month spelled out explicitly rather than a prefix+\w*, which let the month group swallow any suffix ("maybe 5" matched as confident May 5th, rerouting to historical sources).
@@ -66,9 +67,11 @@ def parse_time_window(text: str, now: datetime | None = None, tz: tzinfo | str |
             confidence = 0.8
         except ValueError:
             confidence = 0.5
-    elif "day after tomorrow" in text_l or "parso" in text_l or "परसों" in text_l:
+    # Whole-word, not substring: "kal" inside Kalyan/Kalka/Kalimpong silently shifted the
+    # window to tomorrow and overrode an explicit "today" (same bug class as "may"/"maybe").
+    elif "day after tomorrow" in text_l or has_word(text_l, ("parso", "परसों")):
         base = now + timedelta(days=2)
-    elif "tomorrow" in text_l or "kal" in text_l or "कल" in text_l:
+    elif "tomorrow" in text_l or has_word(text_l, ("kal", "कल")):
         base = now + timedelta(days=1)
     elif "next week" in text_l:
         base = now + timedelta(days=7)

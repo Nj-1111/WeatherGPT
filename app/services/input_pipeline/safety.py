@@ -39,10 +39,16 @@ _INJECTION = re.compile(
 _URL = re.compile(r"https?://", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# Exempted from the length floor below: real, short, unambiguous greetings that would
+# otherwise be rejected as "too short" before query_guardrail.py ever gets to classify them
+# as GuardrailAction.GREETING. Narrower than TOPIC_WORDS deliberately — only exact short
+# greetings, not a general carve-out from the junk filter.
+_SHORT_GREETINGS = {"hi", "hey", "yo"}
+
 
 def _fast_reason(text: str) -> str | None:
     """Length/control-character/injection/URL checks only, no topic judgement — cheap and unconditional, must run before any LLM call so junk/injection-shaped input never reaches (or costs) the extractor."""
-    if len(text) < settings.guardrail_min_chars:
+    if len(text) < settings.guardrail_min_chars and text.casefold() not in _SHORT_GREETINGS:
         return "Question is too short to identify a weather request."
     if len(text) > settings.guardrail_max_chars:
         return f"Question exceeds {settings.guardrail_max_chars} characters."

@@ -11,7 +11,7 @@ ExtractionSource = Literal["llm", "deterministic_fallback", "confirmed"]
 
 
 class GuardrailAction(str, Enum):
-    """What the guardrail decided to do — the real dispatch key. ACCEPT_LOCATION_ONLY calls only the location resolver; ACCEPT_WEATHER_FULL runs the full pipeline; the other four return a rendered message immediately with no further calls."""
+    """What the guardrail decided to do — the real dispatch key. ACCEPT_LOCATION_ONLY calls only the location resolver; ACCEPT_WEATHER_FULL runs the full pipeline; GREETING generates a persona reply via a small LLM call (see input_pipeline/query_guardrail.py:generate_greeting_reply — deliberately NOT a fixed template, unlike the other four); the remaining four return a rendered message immediately with no further calls."""
     ACCEPT_LOCATION_ONLY = "accept_location_only"
     ACCEPT_WEATHER_FULL = "accept_weather_full"
     REJECT_OFF_TOPIC = "reject_off_topic"
@@ -19,6 +19,8 @@ class GuardrailAction(str, Enum):
     VERIFY = "verify"
     # A real question about a hazard this system has no data for (earthquake, tsunami, wildfire, ...) — distinct from REJECT_OFF_TOPIC (not a weather/disaster/location question at all); answering with generic weather data here would be wrong, not just unhelpful.
     UNSUPPORTED_TOPIC = "unsupported_topic"
+    # A bare greeting or "who/what are you" with no weather content at all — never a weather ask embedded alongside a greeting, which stays ACCEPT_WEATHER_FULL.
+    GREETING = "greeting"
 
 
 class ClarifyReason(str, Enum):

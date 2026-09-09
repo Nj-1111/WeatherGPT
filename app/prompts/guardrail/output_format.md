@@ -6,7 +6,7 @@ deterministic path. Takes effect on next process restart, not instantly.
 
 Output ONLY a single valid JSON object, no markdown fences, no commentary:
 {"action": "accept_location_only"|"accept_weather_full"|"reject_off_topic"|"clarify"|
-"verify"|"unsupported_topic", "locations": [string, ...], "time_phrases": [string, ...],
+"verify"|"unsupported_topic"|"greeting", "locations": [string, ...], "time_phrases": [string, ...],
 "pairing_mode": "locations_x_shared_time"|"times_x_shared_location"|"full_cross_product",
 "verify_candidate": string|null, "clarify_reason": "garbled_input"|"no_location"|null,
 "unsupported_topic": string|null, "confidence": number, "detected_lang": string,

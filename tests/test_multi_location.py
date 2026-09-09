@@ -2,6 +2,7 @@
 additive `comparisons` response field."""
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 
@@ -94,3 +95,69 @@ def test_single_location_query_leaves_comparisons_none(monkeypatch):
     response = asyncio.run(_post("/query", body))
     assert response.status_code == 200, response.text
     assert response.json()["comparisons"] is None
+
+
+def test_synthesize_returns_the_explanation_alone_when_one_survived_review():
+    """The explanation restates the same figures in the user's own language and covers every
+    compared location. Prepending English scaffolding to it pinned the answer to English and
+    leaked raw evidence UUIDs into user-facing prose."""
+    from app.agents.base import AgentResult, Claim
+    from app.main import _synthesize
+
+    wio = SimpleNamespace(
+        weather=SimpleNamespace(summary="Rain likely (92% peak probability, 14.3 mm)."),
+        official_warning=SimpleNamespace(active=False, severity=None, event=None),
+        evidence=[],
+        agreement=SimpleNamespace(status="full_agreement"),
+        query=SimpleNamespace(resolved_location={}),
+    )
+    hindi = "कल जयपुर में बारिश नहीं होगी, कोलकाता में तेज़ बारिश होगी।"
+    agents = [AgentResult(agent_name="explanation",
+                          claims=[Claim(claim="explanation", value=hindi, evidence_ids=["e1"])])]
+
+    answer = _synthesize(wio, None, agents)
+    assert answer == hindi
+    assert "Confidence context" not in answer
+    assert "Backed by" not in answer
+
+
+def test_synthesize_falls_back_to_the_deterministic_summary_without_an_explanation():
+    """LLM off or unreachable: the answer is still evidence-grounded, just English."""
+    from app.main import _synthesize
+
+    wio = SimpleNamespace(
+        weather=SimpleNamespace(summary="Rain unlikely (0% peak probability, 0.0 mm)."),
+        official_warning=SimpleNamespace(active=False, severity=None, event=None),
+        evidence=[],
+        agreement=SimpleNamespace(status="full_agreement"),
+        query=SimpleNamespace(resolved_location={}),
+    )
+    answer = _synthesize(wio, None, [])
+    assert "Rain unlikely" in answer
+
+
+_WINDOW_START = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
+_WINDOW_END = _WINDOW_START + timedelta(hours=24)
+
+
+def test_fact_sheet_lists_every_compared_location():
+    """The explanation can only cover a location it was told about."""
+    from app.agents.orchestrator import _fact_sheet
+
+    def _wio(name, summary):
+        return SimpleNamespace(
+            weather=SimpleNamespace(summary=summary, rain={"value_mm": 14.3}, temperature={},
+                                    wind={}, marine={}),
+            official_warning=SimpleNamespace(active=False, severity=None, event=None),
+            agreement=SimpleNamespace(status="full_agreement", notes=""),
+            disagreements=[],
+            query=SimpleNamespace(intent="short", apparent_context=None, raw_text="x",
+                                  valid_from=_WINDOW_START, valid_to=_WINDOW_END,
+                                  resolved_location={"normalized_name": name}),
+        )
+
+    sheet = _fact_sheet(_wio("Jaipur", "Rain unlikely."), None,
+                        comparisons=[_wio("Kolkata", "Rain likely.")])
+    assert "Kolkata" in sheet
+    assert "14.3 mm" in sheet
+    assert "Cover every location" in sheet

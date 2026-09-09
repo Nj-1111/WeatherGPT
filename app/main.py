@@ -42,6 +42,7 @@ from app.services.evidence_store import evidence_store
 from app.services.input_pipeline.conversation_history import recent_turns, record_turn
 from app.services.input_pipeline.query_guardrail import (
     _parse_followup_answer,
+    generate_greeting_reply,
     render_guardrail_message,
     resolve_confirmed_location,
     run_guardrail,
@@ -228,6 +229,13 @@ async def _resolve_location(location: LocationInput | None, question: str,
     raise WeatherGPTError("LOCATION_REQUIRED", "Provide a city, pincode, or latitude/longitude; no location is stored or inferred.", {}, 422)
 
 
+class GreetingResult(NamedTuple):
+    """Third leaf of _weather_request's result union, alongside ResolvedLocation
+    (ACCEPT_LOCATION_ONLY) — an LLM-generated persona reply with no retrieval/fusion/agents
+    run at all."""
+    text: str
+
+
 class WeatherRequestResult(NamedTuple):
     """Replaces the old bare `tuple[Any, list, dict, list, Any, Any]` — same unpacking
     syntax at every call site (`wio, evidence, ... = result` works identically on a
@@ -263,7 +271,8 @@ def _resolve_pairs(locations: list[str], time_phrases: list[str], pairing_mode: 
 
 
 async def _build_comparison_wio(location_phrase: str | None, time_phrase: str | None,
-                                req: QueryRequestV1, capabilities: list[str]) -> Any:
+                                req: QueryRequestV1, capabilities: list[str],
+                                lang: str = "en") -> Any:
     """One (location, time) pair's WIO for the `comparisons` fan-out — resolution + fetch +
     fusion only, no RADE/agents (that would multiply the explanation LLM call by the pair
     count, a cost this round doesn't budget for; deferred, not forgotten)."""
@@ -277,9 +286,15 @@ async def _build_comparison_wio(location_phrase: str | None, time_phrase: str | 
     evidence, semantic_rejections = validated_evidence(evidence)
     resolved_location = location.model_dump()
     evidence = filter_covered_warnings(evidence, resolved_location)
-    wio = build_wio(req.question, resolved_location, valid_from, valid_to, horizon, evidence, lang=req.language or "en")
+    # Registered like the primary path's evidence, or every evidence_id cited inside a
+    # comparison 404s on GET /evidence/{id}.
+    evidence_store.add_many(evidence)
+    wio = build_wio(req.question, resolved_location, valid_from, valid_to, horizon, evidence, lang=lang)
     wio.query.intent = plan.decision_context or horizon
     wio.query.resolved_location["time_resolution_confidence"] = time_confidence
+    # Without this a comparison built on total retrieval failure is indistinguishable from
+    # one built on complete data — the signal was computed here and thrown away.
+    wio.query.resolved_location["retrieval_status"] = retrieval_status
     if semantic_rejections:
         wio.agreement.notes = (wio.agreement.notes + " ").strip() + "Some incompatible evidence was rejected."
     return wio
@@ -343,7 +358,7 @@ async def _record_guardrail_turn(scoped_session_id: str, question: str, decision
                       action=decision.action.value)
 
 
-async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | WeatherRequestResult:
+async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLocation | GreetingResult | WeatherRequestResult:
     started = time.monotonic()
     check_question_fast(req.question)
     guard_decision, guardrail_profile_update, resumed_domain = await _resolve_guardrail_decision(req, request)
@@ -368,6 +383,11 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
             guard_decision = GuardrailDecision(
                 original_text=req.question, action=GuardrailAction.ACCEPT_WEATHER_FULL,
                 extraction_source="session_override")
+
+    if guard_decision is not None and guard_decision.action == GuardrailAction.GREETING:
+        # Not an error, not in _GUARDRAIL_ERROR_CODES: a normal 200 reply with no
+        # retrieval/fusion/agents/RADE, same "return now" shape as ACCEPT_LOCATION_ONLY.
+        return GreetingResult(await generate_greeting_reply(guard_decision))
 
     if guard_decision is not None and guard_decision.action in _GUARDRAIL_ERROR_CODES:
         if guard_decision.action == GuardrailAction.VERIFY and req.session_id and settings.follow_up_context_enabled:
@@ -446,8 +466,18 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
     is_multi_pair = len(pairs) > 1
     comparisons: list[Any] | None = None
     if is_multi_pair:
-        comparisons = await asyncio.gather(
-            *[_build_comparison_wio(loc, t, req, capabilities) for loc, t in pairs[1:]])
+        # return_exceptions: one unresolvable secondary location used to destroy the whole
+        # request, discarding the already-computed primary answer. A failed comparison is
+        # dropped and logged instead — the same "isolated failure" contract retrieval uses.
+        settled = await asyncio.gather(
+            *[_build_comparison_wio(loc, t, req, capabilities, effective_lang) for loc, t in pairs[1:]],
+            return_exceptions=True)
+        comparisons = []
+        for (loc, _), outcome in zip(pairs[1:], settled, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.warning("comparison.failed", extra={"location": loc, "error": type(outcome).__name__})
+            else:
+                comparisons.append(outcome)
 
     decision = None
     # A resumed follow-up's own text (e.g. "small boat, four of us") often won't keyword-match
@@ -466,7 +496,7 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
                 and missing and req.session_id and settings.follow_up_context_enabled):
             await session_router.store_pending_followup(_scoped_id(request, req.session_id), req.question, decision_type)
             wio.query.resolved_location["followup_missing_fields"] = missing
-    agents = await run_all_agents(evidence, wio, profile, wio.query.lang, decision)
+    agents = await run_all_agents(evidence, wio, profile, wio.query.lang, decision, comparisons)
     reviewer = next((result for result in agents if result.agent_name == "reviewer"), None)
     if reviewer is None or reviewer.status != "success":
         errors = reviewer.errors if reviewer else ["reviewer agent did not run"]
@@ -476,6 +506,26 @@ async def _weather_request(req: QueryRequestV1, request: Request) -> ResolvedLoc
 
 
 def _synthesize(wio, decision=None, agents=None) -> str:
+    """The user-facing answer.
+
+    The explanation, when one survived the reviewer's grounding check, IS the answer: it
+    restates the same deterministic figures in the user's own language and covers every
+    compared location. Building the answer from Python f-strings instead would pin it to
+    English no matter what language was asked in, and would silently omit every location
+    after the first. The f-string parts below are the fallback for when no model ran
+    (LLM_ENABLED=false or the tier is unreachable) — English there is an honest degradation,
+    not the design.
+    """
+    explanation = next((claim.value for result in (agents or []) if result.agent_name == "explanation"
+                        for claim in result.claims if claim.claim == "explanation"), None)
+    if explanation:
+        # The fact sheet already carries the active warning, every compared location and any
+        # unresolved clarifying factor, and the prompt requires the model to cover them — so
+        # appending them here too would both duplicate the content and splice English into a
+        # non-English answer. `wio.official_warning` stays structurally in the response for
+        # any caller that needs it independently of the prose.
+        return str(explanation)
+
     parts: list[str] = []
     # Leading with the recommendation must not depend on the LLM being configured, so it's
     # built here from data already computed (decision) and appears even on the fully
@@ -488,14 +538,6 @@ def _synthesize(wio, decision=None, agents=None) -> str:
         parts.append("No compatible weather evidence was available for the requested time window.")
     if wio.official_warning.active:
         parts.append(f"Official {wio.official_warning.severity} warning: {wio.official_warning.event}.")
-    cited = [e.evidence_id for e in wio.evidence[:3]]
-    parts.append(f"Confidence context: {wio.agreement.status}. Backed by {len(wio.evidence)} evidence records"
-                 + (f", including {', '.join(cited)}." if cited else "."))
-    # Appended last, and only if it survived the reviewer's grounding check.
-    explanation = next((claim.value for result in (agents or []) if result.agent_name == "explanation"
-                        for claim in result.claims if claim.claim == "explanation"), None)
-    if explanation:
-        parts.append(str(explanation))
     missing_fields = wio.query.resolved_location.get("followup_missing_fields")
     if missing_fields:
         parts.append("One more thing that could change this — "
@@ -529,6 +571,10 @@ def _location_only_response(location: ResolvedLocation, request: Request) -> Loc
                                 location=location, request_id=request.state.request_id)
 
 
+def _greeting_response(result: GreetingResult, request: Request) -> dict[str, Any]:
+    return {"answer": result.text, "request_id": request.state.request_id}
+
+
 @app.post("/wio/query")
 @app.post("/api/v1/wio/query")
 async def wio_query_v1(req: QueryRequestV1, request: Request):
@@ -536,6 +582,8 @@ async def wio_query_v1(req: QueryRequestV1, request: Request):
     result = await _weather_request(req, request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
+    if isinstance(result, GreetingResult):
+        return _greeting_response(result, request)
     wio, evidence, retrieval_status, agents, _, _, comparisons = result
     return {"wio": wio, "evidence_count": len(evidence), "retrieval": retrieval_status, "agents": agents,
             "comparisons": comparisons, "request_id": request.state.request_id}
@@ -548,6 +596,8 @@ async def query_v1(req: QueryRequestV1, request: Request):
     result = await _weather_request(req, request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
+    if isinstance(result, GreetingResult):
+        return _greeting_response(result, request)
     wio, _, retrieval_status, agents, _, decision, comparisons = result
     return {"answer": _synthesize(wio, decision, agents), "wio": wio, "decision": decision, "agents": agents,
             "retrieval": retrieval_status, "comparisons": comparisons, "request_id": request.state.request_id}
@@ -562,6 +612,8 @@ async def decision_endpoint(req: DecisionRequest, request: Request):
     result = await _weather_request(req, request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
+    if isinstance(result, GreetingResult):
+        return _greeting_response(result, request)
     wio, evidence, retrieval_status, agents, profile, rade_result, _ = result
     if rade_result is None:
         rade_result = decide(wio, profile, req.decision_type or req.question)
@@ -601,6 +653,8 @@ async def active_warnings(request: Request, location: str, question: str = "warn
     result = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
+    if isinstance(result, GreetingResult):
+        return _greeting_response(result, request)
     wio, _, retrieval, _, _, _, _ = result
     return {"warnings": [wio.official_warning] if wio.official_warning.active else [], "retrieval": retrieval}
 
@@ -610,6 +664,8 @@ async def forecast(request: Request, location: str, question: str = "weather tod
     result = await _weather_request(QueryRequestV1(question=question, location=LocationInput(raw=location)), request)
     if isinstance(result, ResolvedLocation):
         return _location_only_response(result, request)
+    if isinstance(result, GreetingResult):
+        return _greeting_response(result, request)
     wio, evidence, retrieval, _, _, _, _ = result
     return {"wio": wio, "retrieval": retrieval, "evidence_count": len(evidence)}
 

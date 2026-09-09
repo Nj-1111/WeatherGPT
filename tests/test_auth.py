@@ -13,6 +13,7 @@ from app.config import settings
 from app.main import app
 from app.schemas.ceo import CanonicalEvidenceObject, Geometry, Provenance
 from app.schemas.location import ResolvedLocation
+from app.services.auth import verify_api_key
 
 START = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
 
@@ -118,3 +119,15 @@ def test_cross_key_context_isolation(monkeypatch):
                                       json={"question": "Will it rain in Nagpur tomorrow?",
                                             "user_id": shared_user_id}))
     assert not any(c["claim"] == "context.risk_tolerance" for c in context_claims(other_key.json()["agents"]))
+
+
+def test_non_ascii_bearer_token_returns_none_instead_of_raising(monkeypatch):
+    """hmac.compare_digest raises TypeError on non-ASCII str. verify_api_key runs inside
+    RequestIDMiddleware, which sits outside ExceptionMiddleware, so the raise bypassed the
+    JSON error envelope entirely and produced a bare 500 — pre-auth, and only where
+    WEATHERGPT_API_KEYS is actually set (production, never dev). Tested at this level
+    because httpx refuses to encode a non-ASCII header, while a raw client sends it fine."""
+    _with_keys(monkeypatch, ("key-a",))
+    assert verify_api_key("Bearer café") is None
+    assert verify_api_key("Bearer ключ") is None
+    assert verify_api_key("Bearer key-a") == "key-a"

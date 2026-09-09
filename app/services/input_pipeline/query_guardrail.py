@@ -67,6 +67,21 @@ _LOCATION_ONLY_LEAD = re.compile(
     re.IGNORECASE,
 )
 
+# Deterministic-fallback-only signal for a bare greeting/identity question — kept narrow
+# (short message, no weather content) so "hi, will it rain in Pune tomorrow" still reads as
+# ACCEPT_WEATHER_FULL, matching the LLM path's rule 1 boundary.
+_GREETING_WORDS = ("hi", "hello", "hey", "hiya", "yo", "namaste")
+_GREETING_PHRASES = ("who are you", "what are you", "what can you do")
+
+
+def _is_greeting_only(casefolded_text: str) -> bool:
+    if is_definitely_weather_related(casefolded_text):
+        return False
+    if any(phrase in casefolded_text for phrase in _GREETING_PHRASES):
+        return True
+    return has_word(casefolded_text, _GREETING_WORDS) and len(casefolded_text.split()) <= 4
+
+
 # Disaster types with no backing data source — checked before the topic gate so these get an honest UNSUPPORTED_TOPIC rather than irrelevant weather data or a bare off-topic rejection; distinct from TOPIC_WORDS' cyclone/flood/storm, which ARE backed by CAP.
 _UNSUPPORTED_DISASTER_WORDS = ("earthquake", "tsunami", "wildfire", "landslide", "volcano",
                               "volcanic", "drought")
@@ -156,6 +171,9 @@ def _deterministic_fallback(raw_text: str) -> GuardrailDecision:
     falsely rejecting a legitimate question the list simply didn't recognize."""
     text = (raw_text or "").strip()
     casefolded = text.casefold()
+    if _is_greeting_only(casefolded):
+        return GuardrailDecision(original_text=text, action=GuardrailAction.GREETING,
+                                 confidence=1.0, extraction_source="deterministic_fallback")
     unsupported = next((word for word in _UNSUPPORTED_DISASTER_WORDS if has_word(casefolded, (word,))), None)
     if unsupported:
         return GuardrailDecision(original_text=text, action=GuardrailAction.UNSUPPORTED_TOPIC,
@@ -368,3 +386,34 @@ def render_guardrail_message(decision: GuardrailDecision) -> str | None:
                 "weather-driven risks (cyclone, flood, storm, heat-wave warnings), "
                 "marine/fishing conditions, mountain weather, and travel/route planning.")
     return None
+
+
+_GREETING_PROMPT = load_prompt("greeting")
+_GREETING_LLM_KWARGS = {
+    # Nonzero and well above the guardrail classification call's 0.0 — variety is the whole
+    # point of this call, unlike every fixed-template action above.
+    "temperature": 0.9,
+    "max_tokens": 150,
+    "reasoning_effort": "low",
+}
+# The one hardcoded string in the greeting path — used only when the LLM call itself fails
+# (outage/empty response), same degrade-gracefully convention as run_explanation_agent.
+_GREETING_FALLBACK = ("Hi, I'm Neel — happy to help with weather, forecasts, or travel/trek "
+                     "conditions. Where would you like to check?")
+
+
+async def generate_greeting_reply(decision: GuardrailDecision) -> str:
+    """LLM-generated persona reply for GuardrailAction.GREETING — deliberately NOT a fixed
+    template, unlike every other non-accept action in this module. A greeting carries no
+    data-correctness risk (no place, number, or warning to get wrong), so it's rendered by
+    its own small LLM call (app/prompts/greeting/) instead of render_guardrail_message,
+    varied and in the user's detected language rather than always identical."""
+    messages = [
+        {"role": "system", "content": _GREETING_PROMPT},
+        {"role": "user", "content": f"{decision.original_text}\n\nReply in language code: {decision.detected_lang}."},
+    ]
+    result = await small_llm(messages, **_GREETING_LLM_KWARGS)
+    if not result.available or not result.text:
+        logger.info("query_guardrail.greeting_llm_unavailable", extra={"error": result.error})
+        return _GREETING_FALLBACK
+    return result.text.strip()

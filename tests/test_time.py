@@ -70,3 +70,26 @@ def test_tomorrow_is_still_a_full_day():
     valid_from, valid_to, horizon, _ = parse_time_window("will it rain tomorrow", now=now)
     assert horizon == "short"
     assert valid_from.hour == 0 and valid_to.hour == 23
+
+
+def test_city_names_containing_kal_are_not_read_as_tomorrow():
+    """'kal' (Hindi: tomorrow) was matched as a bare substring, so 'Kalyan' — a city of
+    1.2M — silently shifted the window to tomorrow, overriding an explicit 'today'.
+    Same class as the 'may'/'maybe' bug above; has_word is the existing fix."""
+    now = datetime(2026, 9, 3, 10, 0, tzinfo=IST)
+    for question in ("weather in Kalyan today", "weather in Kalka", "rain in Kalimpong today"):
+        vf, _, _, _ = parse_time_window(question, now)
+        assert (vf.month, vf.day) == (9, 3), question
+
+
+def test_kal_as_its_own_word_still_means_tomorrow():
+    now = datetime(2026, 9, 3, 10, 0, tzinfo=IST)
+    for question in ("kal barish hogi kya", "कल बारिश होगी क्या"):
+        vf, _, _, _ = parse_time_window(question, now)
+        assert (vf.month, vf.day) == (9, 4), question
+
+
+def test_parso_as_its_own_word_still_means_day_after_tomorrow():
+    now = datetime(2026, 9, 3, 10, 0, tzinfo=IST)
+    vf, _, _, _ = parse_time_window("parso ka mausam", now)
+    assert (vf.month, vf.day) == (9, 5)

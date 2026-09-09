@@ -48,7 +48,7 @@ def test_injection_shapes_are_rejected(question):
 
 
 @pytest.mark.parametrize("question,fragment", [
-    ("hi", "too short"),
+    ("ab", "too short"),
     ("rain http://evil.test", "URL"),
     ("rain\x00tomorrow", "control characters"),
     ("rain " * 61, "words"),
@@ -58,6 +58,14 @@ def test_malformed_input_is_rejected(question, fragment):
     with pytest.raises(WeatherGPTError) as exc:
         check_question_fast(question)
     assert fragment in exc.value.message
+
+
+@pytest.mark.parametrize("question", ["hi", "hey", "yo", "HI", "Hi"])
+def test_short_greetings_are_exempt_from_the_length_floor(question):
+    """"hi"/"hey"/"yo" are shorter than guardrail_min_chars but are real, deliberately
+    exempted greetings (see query_guardrail.py's GuardrailAction.GREETING) — they must
+    reach the guardrail's topic classification, not be rejected as junk before it runs."""
+    check_question_fast(question)
 
 
 def test_guardrail_rejects_before_any_network_call():

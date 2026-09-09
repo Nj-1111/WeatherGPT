@@ -446,3 +446,28 @@ def test_panel_evidence_ids_includes_marine_so_marine_only_query_gets_an_explana
     assert ids and set(ids) == set(wio.weather.marine["evidence_ids"])
 
 
+
+
+def test_comparison_values_count_as_grounded():
+    """A multi-location answer legitimately restates the compared location's figures. Before
+    comparisons were passed to the grounding check, every such number read as ungrounded and
+    the reviewer suppressed exactly the answers the comparison feature exists to produce."""
+    ceos = _evidence()
+    primary = _wio(ceos)
+
+    other_ceos = [_ceo("precipitation_amount", 14.3, 1, window=1),
+                  _ceo("temperature_2m", 19.0, 1, unit="C", statistic="instant")]
+    other = build_wio("weather in Kolkata", LOCATION, START, END, "short", other_ceos)
+
+    prose = "Indore sees about 2.4 mm, while Kolkata gets 14.3 mm and a high near 19.0 C."
+    assert check_prose_grounding(prose, primary) != []          # without comparisons: flagged
+    assert check_prose_grounding(prose, primary, [other]) == []  # with comparisons: grounded
+
+
+def test_a_number_from_nowhere_is_still_ungrounded_with_comparisons():
+    """The widened allow-list must not become a blanket pass."""
+    ceos = _evidence()
+    primary = _wio(ceos)
+    other = build_wio("weather in Kolkata", LOCATION, START, END, "short",
+                      [_ceo("precipitation_amount", 14.3, 1, window=1)])
+    assert check_prose_grounding("Expect 99.9 mm of rain.", primary, [other]) == ["99.9 mm"]
