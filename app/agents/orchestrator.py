@@ -134,6 +134,17 @@ def _opens_with_greeting(text: str) -> bool:
     return bool(_GREETING_LEAD.match(text))
 
 
+def _is_romanized(text: str) -> bool:
+    """True when every alphabetic character is Latin-script — i.e. the text is written in
+    the Latin alphabet even though its detected language's native script isn't (Hinglish,
+    Banglish, romanized Tamil, ...). {lang} alone tells the explanation model which
+    *language* to answer in, not which *script* — without this, "aj ke brishti hobe
+    kolkataye" (Bengali written in Latin letters) got answered in full Bengali script,
+    which the user never wrote and likely can't read as easily. Codepoint check only; the
+    raw text itself never reaches the fact sheet."""
+    return bool(text) and all(ord(ch) < 0x0370 for ch in text if ch.isalpha())
+
+
 def _comparison_lines(comparisons) -> list[str]:
     """Each additional (location, time) pair's fused panels, so a multi-location question is
     answered about every location instead of only the primary one. Same shape as the primary
@@ -170,6 +181,10 @@ def _fact_sheet(wio, decision, context_docs: list[str] | None = None, comparison
         lines.append(f"Apparent context: {wio.query.apparent_context}")
     if _opens_with_greeting(wio.query.raw_text):
         lines.append("User opened with a greeting.")
+    if wio.query.lang != "en" and _is_romanized(wio.query.raw_text):
+        lines.append(f"The user wrote in {wio.query.lang} but in the Latin alphabet "
+                     "(romanized), not the native script. Reply the same way — Latin "
+                     "alphabet, not native script.")
     rain=wio.weather.rain or {}
     if rain:
         lines.append(f"Precipitation: {rain.get('value_mm')} mm total over the window"

@@ -151,7 +151,7 @@ def test_fact_sheet_lists_every_compared_location():
             official_warning=SimpleNamespace(active=False, severity=None, event=None),
             agreement=SimpleNamespace(status="full_agreement", notes=""),
             disagreements=[],
-            query=SimpleNamespace(intent="short", apparent_context=None, raw_text="x",
+            query=SimpleNamespace(intent="short", apparent_context=None, raw_text="x", lang="en",
                                   valid_from=_WINDOW_START, valid_to=_WINDOW_END,
                                   resolved_location={"normalized_name": name}),
         )
@@ -161,3 +161,30 @@ def test_fact_sheet_lists_every_compared_location():
     assert "Kolkata" in sheet
     assert "14.3 mm" in sheet
     assert "Cover every location" in sheet
+
+
+def test_fact_sheet_flags_romanized_non_english_input():
+    """Bengali/Hindi/etc. written in Latin letters ("aj ke brishti hobe kolkataye") was
+    answered in native script even though the user never typed native script — {lang} alone
+    names a language, not a script."""
+    from app.agents.orchestrator import _fact_sheet
+
+    def _wio(lang, raw_text):
+        return SimpleNamespace(
+            weather=SimpleNamespace(summary="Rain likely.", rain={}, temperature={}, wind={}, marine={}),
+            official_warning=SimpleNamespace(active=False, severity=None, event=None),
+            agreement=SimpleNamespace(status="full_agreement", notes=""),
+            disagreements=[],
+            query=SimpleNamespace(intent="short", apparent_context=None, lang=lang,
+                                  raw_text=raw_text, valid_from=_WINDOW_START, valid_to=_WINDOW_END,
+                                  resolved_location={"normalized_name": "Kolkata"}),
+        )
+
+    romanized = _fact_sheet(_wio("bn", "aj ke brishti hobe kolkataye"), None)
+    assert "Latin alphabet" in romanized
+
+    native_script = _fact_sheet(_wio("bn", "আজ কি বৃষ্টি হবে কলকাতায়"), None)
+    assert "Latin alphabet" not in native_script
+
+    english = _fact_sheet(_wio("en", "will it rain in Kolkata today"), None)
+    assert "Latin alphabet" not in english
